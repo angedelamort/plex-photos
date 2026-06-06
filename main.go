@@ -50,6 +50,7 @@ func main() {
 	scanner := library.NewScanner(db, store, cfg.PhotosPath)
 	thumbs := library.NewThumbnailer(cfg.PhotosPath, thumbCache, cfg.ThumbWidth)
 	galleryHandler := library.NewHandler(store, scanner, thumbs, cfg.PhotosPath, artDir)
+	galleryHandler.SetVersion(version)
 
 	// Plex-like auto-detection of new content: a filesystem watcher over the
 	// library roots plus an admin-configurable periodic rescan.

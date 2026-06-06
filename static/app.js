@@ -1408,7 +1408,8 @@ async function deleteUser(user) {
 function renderSettings(main) {
   main.innerHTML = "";
   const header = el("div", { class: "section-header" });
-  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("settings.title"))}</div><div class="section-sub">${esc(t("settings.subtitle"))}</div>` }));
+  const ver = (state.user && state.user.version) || "dev";
+  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("settings.title"))}</div><div class="section-sub">${esc(t("settings.subtitle"))} · v${esc(ver)}</div>` }));
   main.appendChild(header);
 
   const group = el("div", { class: "settings-group" });

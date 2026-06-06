@@ -23,7 +23,11 @@ type Handler struct {
 	thumbs     *Thumbnailer
 	photosRoot string
 	artDir     string
+	version    string
 }
+
+// SetVersion records the build version surfaced to clients (e.g. in /api/me).
+func (h *Handler) SetVersion(v string) { h.version = v }
 
 // NewHandler builds the gallery handler. artDir is the internal folder (under the
 // data mount) where uploaded custom art is stored, kept out of the photos library.
@@ -71,6 +75,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		"username": s.Username,
 		"email":    s.Email,
 		"isAdmin":  s.IsAdmin,
+		"version":  h.version,
 	})
 }
 
