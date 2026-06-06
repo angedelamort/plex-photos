@@ -9,9 +9,6 @@ plex-photos.exe
 # Logs
 *.log
 
-# Editor / local tooling
-.cursor/
-
 # Local dev data / databases / thumbnails
 /testdata/
 *.db
