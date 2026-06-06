@@ -144,14 +144,28 @@ go test ./test/...        # Go unit + integration tests
 
 A browser test plan and a `/test` Cursor skill are available — see [test/README.md](test/README.md).
 
+## First-run setup
+
+In plex mode you no longer have to supply the Plex settings up front. If
+`PLEX_SERVER_URL` / `PLEX_MACHINE_ID` are not provided via environment variables,
+the app boots into a **first-run setup wizard** served at `/setup` (the root URL
+redirects there). Enter your Plex server URL, click **Detect** to auto-fetch the
+machine ID from `<serverURL>/identity` (or paste it manually), and save. Settings
+are persisted in the data dir and applied immediately — no container restart.
+
+Precedence is **environment variable > saved setting**: any value provided via
+env is authoritative and is not editable in the wizard. The setup page is
+unauthenticated by necessity (no Plex login exists yet) and becomes inert once
+configured, so complete first-run setup on your local network.
+
 ## Configuration
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `AUTH_PROVIDER` | | `plex` | Auth backend: `plex` or `mock` (dev) |
-| `PLEX_SERVER_URL` | plex mode | — | Local Plex server URL |
-| `PLEX_MACHINE_ID` | plex mode | — | Plex server machine ID (validates server access) |
-| `PUBLIC_BASE_URL` | plex mode | `http://localhost:$PORT` | Public URL for the Plex OAuth callback |
+| `PLEX_SERVER_URL` | | first-run wizard | Local Plex server URL. If unset, collected via the `/setup` wizard |
+| `PLEX_MACHINE_ID` | | first-run wizard | Plex server machine ID (validates server access). If unset, auto-detected/collected via the `/setup` wizard |
+| `PUBLIC_BASE_URL` | | `http://localhost:$PORT` | Public URL for the Plex OAuth callback. Overridable in the wizard |
 | `SESSION_SECRET` | | auto-generated | Cookie signing key. If unset, a random key is generated and persisted to `<DATA_PATH>/session.key` on first run |
 | `PHOTOS_PATH` | yes | `/photos` | Path to the photos mount |
 | `DATA_PATH` | yes | `/data` | Single mountable data dir (arr-style `/config`): holds the SQLite DB plus a `cache/` subfolder with `cache/thumbs` and `cache/art` (uploaded custom posters/backgrounds) |

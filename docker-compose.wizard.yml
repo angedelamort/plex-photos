@@ -1,0 +1,14 @@
+# Temporary override to exercise the first-run setup wizard.
+# Layers on top of docker-compose.plex.yml and blanks the Plex env vars so the
+# app boots UNCONFIGURED and serves /setup. Use explicitly:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.plex.yml -f docker-compose.wizard.yml up -d
+#
+# Not for production; settings entered in the wizard persist in the data volume.
+services:
+  plex-photos:
+    environment:
+      AUTH_PROVIDER: plex
+      PLEX_SERVER_URL: ""
+      PLEX_MACHINE_ID: ""
+      PUBLIC_BASE_URL: ""

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>plex-photos setup</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .setup-card { max-width: 440px; text-align: left; }
+  .setup-card .login-logo { justify-content: center; width: 100%; }
+  .setup-card .login-sub { text-align: center; }
+  .setup-field { margin-bottom: 16px; }
+  .setup-field label { display: block; font-size: 13px; margin-bottom: 6px; }
+  .setup-field .field-hint { margin-top: 4px; }
+  .setup-input-row { display: flex; gap: 8px; }
+  .setup-card input[type="text"] {
+    width: 100%; padding: 9px 11px; border-radius: var(--radius);
+    border: 0.5px solid var(--border-hover); background: rgba(255,255,255,0.05);
+    color: var(--text); font-size: 13px; font-family: inherit; box-sizing: border-box;
+  }
+  .setup-msg { font-size: 13px; margin: 8px 0 0; min-height: 18px; }
+  .setup-msg.error { color: var(--danger); }
+  .setup-msg.ok { color: var(--accent); }
+  .setup-actions { margin-top: 20px; }
+  .setup-actions .btn { width: 100%; justify-content: center; padding: 11px; }
+  .btn:disabled { opacity: 0.5; cursor: default; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="login-screen">
+  <div class="login-card setup-card">
+    <div class="login-logo">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-camera"/></svg>
+      plex-photos
+    </div>
+    <p class="login-sub">First-run setup. Connect plex-photos to your Plex server. Best done on your local network.</p>
+
+    <div class="setup-field">
+      <label for="serverURL">Plex server URL</label>
+      <div class="setup-input-row">
+        <input type="text" id="serverURL" placeholder="http://192.168.1.10:32400" autocomplete="off" spellcheck="false">
+        <button class="btn" id="detect-btn" type="button">Detect</button>
+      </div>
+      <div class="field-hint">The local address of your Plex Media Server.</div>
+    </div>
+
+    <div class="setup-field">
+      <label for="machineId">Machine ID</label>
+      <input type="text" id="machineId" placeholder="Auto-detected, or paste manually" autocomplete="off" spellcheck="false">
+      <div class="field-hint">Click Detect to fetch it from the server, or enter it yourself.</div>
+    </div>
+
+    <div class="setup-field">
+      <label for="publicBaseURL">Public base URL <span style="color:var(--text-muted)">(optional)</span></label>
+      <input type="text" id="publicBaseURL" placeholder="" autocomplete="off" spellcheck="false">
+      <div class="field-hint">Public URL used for the Plex sign-in callback. Defaults to this site's address.</div>
+    </div>
+
+    <p class="setup-msg" id="msg"></p>
+
+    <div class="setup-actions">
+      <button class="btn accent" id="save-btn" type="button">Save and continue</button>
+    </div>
+  </div>
+</div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-camera" viewBox="0 0 24 24"><path fill="currentColor" d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Zm0 1.8a5 5 0 1 1 0-10 5 5 0 0 1 0 10ZM9 2l-1.5 2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3.5L15 2H9Z"/></symbol>
+</svg>
+
+<script>
+"use strict";
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const serverURL = $("serverURL");
+  const machineId = $("machineId");
+  const publicBaseURL = $("publicBaseURL");
+  const detectBtn = $("detect-btn");
+  const saveBtn = $("save-btn");
+  const msg = $("msg");
+
+  // Default the public base URL to the current origin as a sensible guess.
+  publicBaseURL.placeholder = window.location.origin;
+
+  function setMsg(text, kind) {
+    msg.textContent = text || "";
+    msg.className = "setup-msg" + (kind ? " " + kind : "");
+  }
+
+  async function postJSON(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) throw new Error(data.error || ("Request failed (" + res.status + ")"));
+    return data;
+  }
+
+  detectBtn.addEventListener("click", async () => {
+    const url = serverURL.value.trim();
+    if (!url) { setMsg("Enter the Plex server URL first.", "error"); return; }
+    detectBtn.disabled = true;
+    setMsg("Contacting Plex server\u2026", "");
+    try {
+      const data = await postJSON("/api/setup/identity", { serverURL: url });
+      machineId.value = data.machineId || "";
+      setMsg("Machine ID detected.", "ok");
+    } catch (e) {
+      setMsg(e.message, "error");
+    } finally {
+      detectBtn.disabled = false;
+    }
+  });
+
+  saveBtn.addEventListener("click", async () => {
+    const payload = {
+      serverURL: serverURL.value.trim(),
+      machineId: machineId.value.trim(),
+      publicBaseURL: publicBaseURL.value.trim(),
+    };
+    if (!payload.serverURL || !payload.machineId) {
+      setMsg("Server URL and Machine ID are required.", "error");
+      return;
+    }
+    saveBtn.disabled = true;
+    setMsg("Saving\u2026", "");
+    try {
+      await postJSON("/api/setup/save", payload);
+      setMsg("Saved. Redirecting\u2026", "ok");
+      window.location.href = "/";
+    } catch (e) {
+      setMsg(e.message, "error");
+      saveBtn.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>

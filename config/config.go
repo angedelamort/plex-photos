@@ -12,6 +12,7 @@ import (
 type Config struct {
 	PlexServerURL string
 	PlexMachineID string
+	PublicBaseURL string
 	PhotosPath    string
 	DataPath      string
 	SessionSecret string
@@ -33,6 +34,7 @@ func Load() (*Config, error) {
 	c := &Config{
 		PlexServerURL: os.Getenv("PLEX_SERVER_URL"),
 		PlexMachineID: os.Getenv("PLEX_MACHINE_ID"),
+		PublicBaseURL: os.Getenv("PUBLIC_BASE_URL"),
 		PhotosPath:    getEnv("PHOTOS_PATH", "/photos"),
 		DataPath:      getEnv("DATA_PATH", "/data"),
 		SessionSecret: os.Getenv("SESSION_SECRET"),
@@ -77,14 +79,10 @@ func Load() (*Config, error) {
 	// persists one under DataPath on first run (see auth.ResolveSessionSecret),
 	// the same way Overseerr/the *arr apps manage their signing keys.
 
-	if c.AuthProvider == "plex" {
-		if c.PlexServerURL == "" {
-			return nil, fmt.Errorf("PLEX_SERVER_URL is required when AUTH_PROVIDER=plex")
-		}
-		if c.PlexMachineID == "" {
-			return nil, fmt.Errorf("PLEX_MACHINE_ID is required when AUTH_PROVIDER=plex")
-		}
-	}
+	// Plex settings (PLEX_SERVER_URL / PLEX_MACHINE_ID / PUBLIC_BASE_URL) are no
+	// longer required at boot. When absent, the app starts in setup mode and the
+	// first-run wizard collects them, persisting to the data dir. Env vars, when
+	// present, act as authoritative bootstrap overrides (see main.go wiring).
 
 	return c, nil
 }

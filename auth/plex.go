@@ -19,32 +19,43 @@ const (
 	pinCookieName   = "pp_plex_pin"
 )
 
-// PlexProvider implements the Plex SSO PIN/OAuth flow.
+// PlexProvider implements the Plex SSO PIN/OAuth flow. Its Plex-specific
+// configuration (machine id, public base url) is read dynamically from the
+// shared SetupState on each request, so the first-run setup wizard can change
+// it at runtime without rebuilding routes or restarting the container.
 type PlexProvider struct {
-	// ClientID is a stable identifier for this app instance (X-Plex-Client-Identifier).
-	ClientID string
 	// Product is the human-readable app name shown on plex.tv.
 	Product string
-	// MachineID is the Plex server machine identifier the user must have access to.
-	MachineID string
-	// PublicBaseURL is the externally reachable base URL used to build the callback (forwardUrl).
-	PublicBaseURL string
 	// Secure controls the Secure flag on the temporary PIN cookie.
 	Secure bool
+	// state holds the live Plex configuration.
+	state *SetupState
 
 	http *http.Client
 }
 
-// NewPlexProvider builds a Plex auth provider.
-func NewPlexProvider(clientID, product, machineID, publicBaseURL string, secure bool) *PlexProvider {
+// NewPlexProvider builds a Plex auth provider backed by the given setup state.
+func NewPlexProvider(product string, state *SetupState, secure bool) *PlexProvider {
 	return &PlexProvider{
-		ClientID:      clientID,
-		Product:       product,
-		MachineID:     machineID,
-		PublicBaseURL: strings.TrimRight(publicBaseURL, "/"),
-		Secure:        secure,
-		http:          &http.Client{Timeout: 15 * time.Second},
+		Product: product,
+		Secure:  secure,
+		state:   state,
+		http:    &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+// clientID derives a stable X-Plex-Client-Identifier from the configured
+// machine id, matching the previous "plex-photos-<machineID>" convention.
+func (p *PlexProvider) clientID() string {
+	return "plex-photos-" + p.state.Config().MachineID
+}
+
+func (p *PlexProvider) machineID() string {
+	return p.state.Config().MachineID
+}
+
+func (p *PlexProvider) publicBaseURL() string {
+	return strings.TrimRight(p.state.Config().PublicBaseURL, "/")
 }
 
 type plexPin struct {
@@ -55,7 +66,7 @@ type plexPin struct {
 func (p *PlexProvider) plexHeaders(req *http.Request) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Plex-Product", p.Product)
-	req.Header.Set("X-Plex-Client-Identifier", p.ClientID)
+	req.Header.Set("X-Plex-Client-Identifier", p.clientID())
 }
 
 // StartLogin requests a PIN from plex.tv and returns the plex.tv auth URL.
@@ -93,15 +104,63 @@ func (p *PlexProvider) StartLogin(w http.ResponseWriter, r *http.Request) (strin
 		MaxAge:   600,
 	})
 
-	forwardURL := p.PublicBaseURL + "/auth/callback"
+	forwardURL := p.publicBaseURL() + "/auth/callback"
 	authURL := plexAuthAppURL + "#?" + url.Values{
-		"clientID":                     {p.ClientID},
-		"code":                         {pin.Code},
-		"forwardUrl":                   {forwardURL},
-		"context[device][product]":     {p.Product},
+		"clientID":                 {p.clientID()},
+		"code":                     {pin.Code},
+		"forwardUrl":               {forwardURL},
+		"context[device][product]": {p.Product},
 	}.Encode()
 
 	return authURL, nil
+}
+
+// FetchMachineID queries a Plex server's /identity endpoint and returns its
+// machineIdentifier. Used by the first-run setup wizard to auto-detect the
+// machine id from a server URL the admin enters.
+func FetchMachineID(serverURL string) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(serverURL), "/")
+	if base == "" {
+		return "", errors.New("server URL is required")
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errors.New("invalid server URL (expected http(s)://host:port)")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, base+"/identity", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("contact Plex server: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Plex server returned status %d", resp.StatusCode)
+	}
+
+	var out struct {
+		MachineIdentifier string `json:"machineIdentifier"`
+		MediaContainer    struct {
+			MachineIdentifier string `json:"machineIdentifier"`
+		} `json:"MediaContainer"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode Plex identity: %w", err)
+	}
+	id := out.MachineIdentifier
+	if id == "" {
+		id = out.MediaContainer.MachineIdentifier
+	}
+	if id == "" {
+		return "", errors.New("no machineIdentifier in Plex response")
+	}
+	return id, nil
 }
 
 type plexUser struct {
@@ -227,8 +286,9 @@ func (p *PlexProvider) checkServerAccess(token string) (isAdmin, hasAccess bool,
 		return false, false, fmt.Errorf("decode plex resources: %w", err)
 	}
 
+	machineID := p.machineID()
 	for _, res := range resources {
-		if res.ClientIdentifier == p.MachineID {
+		if res.ClientIdentifier == machineID {
 			return res.Owned, true, nil
 		}
 	}

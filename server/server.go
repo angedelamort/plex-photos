@@ -19,6 +19,10 @@ type Deps struct {
 	Mw        *auth.Middleware
 	Gallery   *library.Handler
 	StaticDir string
+
+	// Setup is the first-run wizard handler. When non-nil and not yet
+	// configured, the app serves the setup page instead of the login screen.
+	Setup *SetupHandler
 }
 
 // NewMux builds the application's HTTP routes. It is shared by the main binary
@@ -54,6 +58,13 @@ func NewMux(d Deps) *http.ServeMux {
 		d.Sessions.Clear(w)
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
+
+	// --- First-run setup wizard (unauthenticated; inert once configured) ---
+	if d.Setup != nil {
+		mux.HandleFunc("GET /setup", d.Setup.Page)
+		mux.HandleFunc("POST /api/setup/identity", d.Setup.DetectMachineID)
+		mux.HandleFunc("POST /api/setup/save", d.Setup.Save)
+	}
 
 	// --- Current user ---
 	mux.Handle("GET /api/me", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.Me)))
@@ -111,6 +122,11 @@ func NewMux(d Deps) *http.ServeMux {
 	}
 	fileServer := http.FileServer(http.Dir(staticDir))
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		// While unconfigured, send the operator to the first-run setup wizard.
+		if d.Setup != nil && !d.Setup.state.Configured() && r.URL.Path == "/" {
+			http.Redirect(w, r, "/setup", http.StatusFound)
+			return
+		}
 		if r.URL.Path == "/" {
 			http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 			return

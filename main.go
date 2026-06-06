@@ -70,19 +70,22 @@ func main() {
 	mw := auth.NewMiddleware(sessions)
 
 	var provider auth.Provider
+	var setupHandler *server.SetupHandler
 	switch cfg.AuthProvider {
 	case "mock":
 		provider = auth.NewMockProvider(cfg.MockUser, cfg.MockAdmin)
 		log.Printf("auth: mock provider (user=%q admin=%v)", cfg.MockUser, cfg.MockAdmin)
 	default:
-		provider = auth.NewPlexProvider(
-			"plex-photos-"+cfg.PlexMachineID,
-			"plex-photos",
-			cfg.PlexMachineID,
-			publicBaseURL(cfg),
-			secureCookies,
-		)
-		log.Printf("auth: plex provider")
+		// Resolve Plex config with precedence env > DB. Env-provided fields are
+		// authoritative and locked against wizard overwrites.
+		setupState, envLocked := resolvePlexSetup(cfg, store)
+		provider = auth.NewPlexProvider("plex-photos", setupState, secureCookies)
+		setupHandler = server.NewSetupHandler(setupState, store, "static", envLocked)
+		if setupState.Configured() {
+			log.Printf("auth: plex provider (configured)")
+		} else {
+			log.Printf("auth: plex provider (NOT configured \u2014 first-run setup at /setup)")
+		}
 	}
 
 	mux := server.NewMux(server.Deps{
@@ -91,6 +94,7 @@ func main() {
 		Mw:        mw,
 		Gallery:   galleryHandler,
 		StaticDir: "static",
+		Setup:     setupHandler,
 	})
 
 	srv := &http.Server{
@@ -116,10 +120,40 @@ func main() {
 	log.Printf("shutdown complete")
 }
 
-func publicBaseURL(cfg *config.Config) string {
-	if v := os.Getenv("PUBLIC_BASE_URL"); v != "" {
-		return v
+// resolvePlexSetup builds the live Plex SetupState using precedence env > DB.
+// It returns the state plus the set of setting keys that were supplied via env
+// vars (and are therefore authoritative / not editable by the setup wizard).
+func resolvePlexSetup(cfg *config.Config, store *library.Store) (*auth.SetupState, map[string]bool) {
+	envLocked := map[string]bool{}
+
+	serverURL := cfg.PlexServerURL
+	if serverURL != "" {
+		envLocked[server.SettingPlexServerURL] = true
+	} else {
+		serverURL, _ = store.GetSetting(server.SettingPlexServerURL, "")
 	}
-	return "http://localhost:" + cfg.Port
+
+	machineID := cfg.PlexMachineID
+	if machineID != "" {
+		envLocked[server.SettingPlexMachineID] = true
+	} else {
+		machineID, _ = store.GetSetting(server.SettingPlexMachineID, "")
+	}
+
+	publicBase := cfg.PublicBaseURL
+	if publicBase != "" {
+		envLocked[server.SettingPublicBaseURL] = true
+	} else {
+		publicBase, _ = store.GetSetting(server.SettingPublicBaseURL, "")
+	}
+	if publicBase == "" {
+		publicBase = "http://localhost:" + cfg.Port
+	}
+
+	return auth.NewSetupState(auth.PlexConfig{
+		ServerURL:     serverURL,
+		MachineID:     machineID,
+		PublicBaseURL: publicBase,
+	}), envLocked
 }
 

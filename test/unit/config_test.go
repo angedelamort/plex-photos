@@ -11,7 +11,7 @@ import (
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"PLEX_SERVER_URL", "PLEX_MACHINE_ID", "PHOTOS_PATH", "DATA_PATH",
+		"PLEX_SERVER_URL", "PLEX_MACHINE_ID", "PUBLIC_BASE_URL", "PHOTOS_PATH", "DATA_PATH",
 		"SESSION_SECRET", "PORT", "THUMB_WIDTH", "TZ", "LOG_LEVEL",
 		"AUTH_PROVIDER", "MOCK_USER", "MOCK_ADMIN",
 	} {
@@ -61,26 +61,43 @@ func TestConfigNormalizesRelativePaths(t *testing.T) {
 	}
 }
 
-func TestConfigPlexRequiresFields(t *testing.T) {
+// Plex mode no longer requires PLEX_SERVER_URL / PLEX_MACHINE_ID at boot: when
+// absent, the app starts in setup mode and the first-run wizard collects them.
+func TestConfigPlexLoadsWithoutPlexVars(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_PROVIDER", "plex")
 	t.Setenv("PHOTOS_PATH", "/photos")
 	t.Setenv("DATA_PATH", "/data")
-	t.Setenv("SESSION_SECRET", "a-sufficiently-long-session-secret-value")
 
-	// Missing PLEX_SERVER_URL / PLEX_MACHINE_ID should fail.
-	if _, err := config.Load(); err == nil {
-		t.Fatal("expected plex config without server url/machine id to fail")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected plex config to load without Plex vars (setup mode), got: %v", err)
 	}
+	if cfg.PlexServerURL != "" || cfg.PlexMachineID != "" {
+		t.Errorf("expected empty Plex vars, got server=%q machine=%q", cfg.PlexServerURL, cfg.PlexMachineID)
+	}
+}
 
+// When Plex env vars are provided they are still read into the config and act
+// as authoritative bootstrap overrides.
+func TestConfigPlexReadsEnvVars(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_PROVIDER", "plex")
+	t.Setenv("PHOTOS_PATH", "/photos")
+	t.Setenv("DATA_PATH", "/data")
 	t.Setenv("PLEX_SERVER_URL", "http://plex:32400")
 	t.Setenv("PLEX_MACHINE_ID", "abc123")
+	t.Setenv("PUBLIC_BASE_URL", "https://photos.example.com")
+
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("expected plex config to load, got: %v", err)
 	}
 	if cfg.PlexMachineID != "abc123" {
 		t.Errorf("PlexMachineID = %q, want abc123", cfg.PlexMachineID)
+	}
+	if cfg.PublicBaseURL != "https://photos.example.com" {
+		t.Errorf("PublicBaseURL = %q, want the env value", cfg.PublicBaseURL)
 	}
 }
 
