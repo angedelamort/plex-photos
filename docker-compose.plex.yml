@@ -1,0 +1,23 @@
+# Real Plex OAuth override for local testing.
+# Use explicitly (it is NOT auto-merged like docker-compose.override.yml):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.plex.yml up -d
+#
+# Requires PLEX_SERVER_URL, PLEX_MACHINE_ID and PUBLIC_BASE_URL in .env.
+# SESSION_SECRET is optional (auto-generated under /data on first run).
+services:
+  plex-photos:
+    # Match the image's `nobody` user, which owns /data and /photos.
+    user: "65534:65534"
+    networks: !reset []
+    environment:
+      AUTH_PROVIDER: plex
+      PLEX_SERVER_URL: ${PLEX_SERVER_URL}
+      PLEX_MACHINE_ID: ${PLEX_MACHINE_ID}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+    volumes:
+      - ./testdata/photos:/photos:ro
+
+networks:
+  media:
+    external: false

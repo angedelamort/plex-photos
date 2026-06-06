@@ -1,0 +1,21 @@
+# Local testing override (auto-merged by `docker compose`).
+# Adapts the production compose file for a local mock-auth run:
+#   - mock auth instead of Plex SSO
+#   - mounts ./testdata/photos instead of the NAS path
+#   - default container user + no external network
+# Do NOT use this in production.
+services:
+  plex-photos:
+    # Match the image's `nobody` user, which owns /data and /photos.
+    user: "65534:65534"
+    networks: !reset []
+    environment:
+      AUTH_PROVIDER: mock
+      MOCK_USER: dev
+      MOCK_ADMIN: "true"
+    volumes:
+      - ./testdata/photos:/photos:ro
+
+networks:
+  media:
+    external: false

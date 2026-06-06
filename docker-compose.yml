@@ -1,0 +1,56 @@
+services:
+  plex-photos:
+    image: plex-photos:latest
+    container_name: plex-photos
+    restart: unless-stopped
+
+    # --- Réseau ---
+    ports:
+      - "${PORT:-8099}:${PORT:-8099}"   # HTTP — à mettre derrière un reverse proxy (nginx/Traefik)
+    networks:
+      - media
+
+    # --- Utilisateur & permissions ---
+    # Doit correspondre au propriétaire des fichiers photos sur le NAS
+    # Pour trouver ton PUID/PGID : id $(whoami)
+    user: "1026:100"          # PUID:PGID (ex: utilisateur Synology = 1026, groupe users = 100)
+
+    # --- Sécurité ---
+    read_only: true           # filesystem container en lecture seule
+    tmpfs:
+      - /tmp                  # Go a besoin d'un /tmp pour les fichiers temporaires
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # --- Ressources (optionnel, recommandé sur Synology) ---
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: "0.5"
+
+    # --- Variables d'environnement ---
+    environment:
+      AUTH_PROVIDER: plex                  # "plex" en prod, "mock" en dev
+      PLEX_SERVER_URL: http://plex:32400   # URL locale du serveur Plex
+      PLEX_MACHINE_ID: ${PLEX_MACHINE_ID}  # Machine ID Plex (dans .env)
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}  # URL publique pour le retour OAuth Plex
+      PHOTOS_PATH: /photos
+      DATA_PATH: /data
+      SESSION_SECRET: ${SESSION_SECRET:-}  # Optionnel : auto-généré dans /data si vide
+      THUMB_WIDTH: 400
+      PORT: ${PORT:-8099}
+      TZ: America/Toronto
+
+    # --- Volumes ---
+    volumes:
+      - /volume1/photos:/photos:ro         # Dossier photos NAS — read-only strict
+      - plex-photos-data:/data             # SQLite + cache (thumbnails + custom art) — persisté
+
+volumes:
+  plex-photos-data:
+    driver: local
+
+networks:
+  media:
+    external: true

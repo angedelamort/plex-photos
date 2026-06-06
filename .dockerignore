@@ -1,0 +1,25 @@
+# Development and tooling
+Makefile
+dev.ps1
+*.log
+
+# Environment files
+.env
+.env.*
+
+# Tests and test data
+test/
+testdata/
+
+# Documentation
+README.md
+
+# IDE and version control
+.cursor/
+.git/
+.gitignore
+
+# Docker files (not needed inside the build)
+Dockerfile
+docker-compose.yml
+.dockerignore

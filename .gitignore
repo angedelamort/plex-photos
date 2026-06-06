@@ -1,0 +1,23 @@
+# Secrets & local config
+.env
+
+# Build artifacts
+/dist/
+plex-photos
+plex-photos.exe
+
+# Logs
+*.log
+
+# Editor / local tooling
+.cursor/
+
+# Local dev data / databases / thumbnails
+/testdata/
+*.db
+*.db-shm
+*.db-wal
+
+# OS / editor
+.DS_Store
+Thumbs.db

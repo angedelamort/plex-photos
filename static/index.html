@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>plex-photos</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen" class="login-screen" hidden>
+  <div class="login-card">
+    <div class="login-logo">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-camera"/></svg>
+      plex-photos
+    </div>
+    <p class="login-sub" data-i18n="login.subtitle">Sign in with your Plex account to access your libraries.</p>
+    <a class="btn accent login-btn" href="/auth/login">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-login"/></svg>
+      <span data-i18n="login.button">Sign in with Plex</span>
+    </a>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" hidden>
+  <header class="topbar">
+    <a class="logo" href="#" data-route="home">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-camera"/></svg>
+      plex-photos
+    </a>
+    <div class="topbar-right">
+      <div class="user-menu" id="user-menu">
+        <div class="avatar" id="avatar" title="" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false">--</div>
+        <div class="user-dropdown" id="user-dropdown" hidden>
+          <button class="user-dropdown-item" id="menu-settings" data-route="settings">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
+            <span data-i18n="menu.settings">Settings</span>
+          </button>
+          <a class="user-dropdown-item" href="/auth/logout">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#i-logout"/></svg>
+            <span data-i18n="menu.logout">Log out</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-item" id="nav-home" data-route="home">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-home"/></svg> <span data-i18n="nav.home">Home</span>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label" data-i18n="sidebar.myLibraries">My libraries</div>
+        <div id="sidebar-libs"></div>
+      </div>
+      <div class="sidebar-divider" id="admin-divider" hidden></div>
+      <div class="sidebar-section" id="admin-section" hidden>
+        <div class="sidebar-label" data-i18n="sidebar.admin">Admin</div>
+        <div class="sidebar-item" data-route="admin">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings"/></svg> <span data-i18n="sidebar.libraries">Libraries</span>
+        </div>
+        <div class="sidebar-item" data-route="users">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-users"/></svg> <span data-i18n="sidebar.users">Users</span>
+        </div>
+        <div class="sidebar-item" data-route="errors">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-alert"/></svg> <span data-i18n="sidebar.errors">Error log</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="loading" data-i18n="common.loading">Loading…</div>
+    </main>
+  </div>
+</div>
+
+<!-- VIEWER -->
+<div id="viewer" class="viewer" hidden>
+  <button class="viewer-close" id="viewer-close" data-i18n-title="viewer.close" title="Close">
+    <svg class="icon" viewBox="0 0 24 24"><use href="#i-x"/></svg>
+  </button>
+  <button class="viewer-nav viewer-prev" id="viewer-prev" data-i18n-title="viewer.prev" title="Previous">
+    <svg class="icon" viewBox="0 0 24 24"><use href="#i-chevron-left"/></svg>
+  </button>
+  <img class="viewer-img" id="viewer-img" alt="">
+  <button class="viewer-nav viewer-next" id="viewer-next" data-i18n-title="viewer.next" title="Next">
+    <svg class="icon" viewBox="0 0 24 24"><use href="#i-chevron-right"/></svg>
+  </button>
+  <aside class="viewer-info" id="viewer-info" hidden>
+    <div class="viewer-info-head">
+      <span data-i18n="viewer.info">Information</span>
+      <button class="icon-btn" id="viewer-info-close" data-i18n-title="viewer.close" title="Close">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="viewer-info-body" id="viewer-info-body"></div>
+  </aside>
+  <div class="viewer-overlay" id="viewer-overlay" hidden></div>
+  <div class="viewer-toolbar">
+    <span class="viewer-caption" id="viewer-caption"></span>
+    <button class="btn" id="viewer-slideshow">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-play"/></svg> <span data-i18n="viewer.slideshow">Slideshow</span>
+    </button>
+    <button class="btn" id="viewer-info-btn" data-i18n-title="viewer.info" title="Information">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-info"/></svg>
+    </button>
+    <button class="btn" id="viewer-settings-btn" data-i18n-title="viewer.slideshowSettings" title="Slideshow settings">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
+    </button>
+    <button class="btn accent" id="viewer-cover" hidden>
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg> <span data-i18n="viewer.setCover">Set as cover</span>
+    </button>
+  </div>
+</div>
+
+<!-- SLIDESHOW SETTINGS MODAL -->
+<div id="ss-modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-title" data-i18n="ss.title">Slideshow settings</div>
+    <label class="field">
+      <span data-i18n="ss.duration">Duration per photo (seconds)</span>
+      <input type="number" id="ss-interval" min="1" max="60" step="0.5">
+    </label>
+    <label class="field">
+      <span data-i18n="ss.transition">Transition</span>
+      <select id="ss-transition">
+        <option value="none" data-i18n="ss.transition.none">None</option>
+        <option value="fade" data-i18n="ss.transition.fade">Fade</option>
+        <option value="slide" data-i18n="ss.transition.slide">Slide</option>
+      </select>
+    </label>
+    <label class="field">
+      <span data-i18n="ss.fit">Photo fit</span>
+      <select id="ss-fit">
+        <option value="fit" data-i18n="ss.fit.fit">Fit (no crop)</option>
+        <option value="fill" data-i18n="ss.fit.fill">Fill screen (crop)</option>
+        <option value="scroll" data-i18n="ss.fit.scroll">Auto-scroll</option>
+      </select>
+    </label>
+    <label class="field checkbox">
+      <input type="checkbox" id="ss-loop">
+      <span data-i18n="ss.loop">Loop slideshow</span>
+    </label>
+    <label class="field checkbox">
+      <input type="checkbox" id="ss-showinfo">
+      <span data-i18n="ss.showInfo">Show date / EXIF info</span>
+    </label>
+    <div class="modal-actions">
+      <button class="btn" id="ss-cancel" data-i18n="common.close">Close</button>
+      <button class="btn accent" id="ss-save" data-i18n="common.save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ENTITY EDIT MODAL (collection / library) -->
+<div id="edit-modal" class="modal" hidden>
+  <div class="plex-edit-card">
+    <!-- Header -->
+    <div class="plex-edit-header">
+      <div class="plex-edit-icon"><svg class="icon" viewBox="0 0 24 24"><use href="#i-pen"/></svg></div>
+      <div class="plex-edit-header-title" id="edit-modal-title" data-i18n="edit.title">Edit</div>
+      <button class="plex-edit-close" id="edit-cancel-x"><svg class="icon" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+    </div>
+    <!-- Body: nav + content -->
+    <div class="plex-edit-body">
+      <nav class="plex-edit-nav">
+        <button class="plex-edit-tab active" data-tab="general">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings"/></svg><span data-i18n="edit.tab.general">General</span>
+        </button>
+        <button class="plex-edit-tab" data-tab="poster">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-photo"/></svg><span data-i18n="edit.tab.poster">Poster</span>
+        </button>
+        <button class="plex-edit-tab" data-tab="background">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-image"/></svg><span data-i18n="edit.tab.background">Background</span>
+        </button>
+      </nav>
+      <div class="plex-edit-content">
+
+        <!-- General tab -->
+        <div class="plex-edit-pane active" id="edit-pane-general">
+          <label class="field">
+            <span data-i18n="edit.field.title">Title</span>
+            <input type="text" id="edit-name" data-i18n-placeholder="edit.field.titlePlaceholder" placeholder="Displayed name">
+          </label>
+          <label class="field">
+            <span data-i18n="edit.field.sortTitle">Sort title</span>
+            <input type="text" id="edit-sort-title" data-i18n-placeholder="edit.field.sortTitlePlaceholder" placeholder="Same as title">
+          </label>
+          <label class="field" id="edit-field-folder" hidden>
+            <span data-i18n="edit.field.folderPath">Folder path</span>
+            <input type="text" id="edit-folder-path" readonly>
+          </label>
+          <label class="field" id="edit-field-summary" hidden>
+            <span data-i18n="edit.field.summary">Summary</span>
+            <textarea id="edit-summary" rows="3" data-i18n-placeholder="edit.field.summaryPlaceholder" placeholder="Describe this album"></textarea>
+          </label>
+          <div class="field-row" id="edit-field-meta" hidden>
+            <label class="field">
+              <span data-i18n="edit.field.year">Year</span>
+              <input type="text" id="edit-year" inputmode="numeric" placeholder="2025">
+            </label>
+            <label class="field">
+              <span data-i18n="edit.field.contentRating">Content rating</span>
+              <input type="text" id="edit-content-rating" placeholder="PG">
+            </label>
+            <label class="field">
+              <span data-i18n="edit.field.studio">Studio</span>
+              <input type="text" id="edit-studio">
+            </label>
+          </div>
+        </div>
+
+        <!-- Poster tab -->
+        <div class="plex-edit-pane" id="edit-pane-poster">
+          <div class="plex-edit-art-actions">
+            <button class="plex-edit-art-action" id="edit-poster-choose" data-i18n="edit.art.choose">choose an image</button>
+            <span class="plex-edit-art-sep">·</span>
+            <span class="plex-edit-art-action-label" data-i18n="edit.art.dragDrop">drag &amp; drop</span>
+            <span class="plex-edit-art-sep">·</span>
+            <button class="plex-edit-art-action" id="edit-poster-url" data-i18n="edit.art.url">enter a URL</button>
+          </div>
+          <div class="plex-edit-art-grid" id="edit-poster-grid">
+            <!-- filled by JS -->
+          </div>
+        </div>
+
+        <!-- Background tab -->
+        <div class="plex-edit-pane" id="edit-pane-background">
+          <div class="plex-edit-art-actions">
+            <button class="plex-edit-art-action" id="edit-bg-choose" data-i18n="edit.art.choose">choose an image</button>
+            <span class="plex-edit-art-sep">·</span>
+            <span class="plex-edit-art-action-label" data-i18n="edit.art.dragDrop">drag &amp; drop</span>
+            <span class="plex-edit-art-sep">·</span>
+            <button class="plex-edit-art-action" id="edit-bg-url" data-i18n="edit.art.url">enter a URL</button>
+          </div>
+          <div class="plex-edit-art-grid" id="edit-bg-grid">
+            <!-- filled by JS -->
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <!-- Footer -->
+    <div class="plex-edit-footer">
+      <button class="btn" id="edit-cancel" data-i18n="common.cancel">Cancel</button>
+      <button class="btn accent" id="edit-save" data-i18n="common.save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- LIBRARY MODAL (admin) -->
+<div id="lib-modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-title" id="lib-modal-title" data-i18n="lib.new">New library</div>
+    <label class="field">
+      <span data-i18n="lib.name">Name</span>
+      <input type="text" id="lib-name" data-i18n-placeholder="lib.namePlaceholder" placeholder="Family">
+    </label>
+    <label class="field">
+      <span data-i18n="lib.root">Root folder</span>
+      <div class="field-row">
+        <input type="text" id="lib-root" placeholder="famille">
+        <button type="button" class="btn sm" id="lib-browse" data-i18n="lib.browse">Browse…</button>
+      </div>
+      <small class="field-hint" data-i18n="lib.rootHint">Path inside the photos folder on the server.</small>
+      <div id="lib-browser" class="dir-browser" hidden>
+        <div class="dir-browser-bar">
+          <span id="lib-browser-path" class="dir-browser-path"></span>
+        </div>
+        <ul id="lib-browser-list" class="dir-browser-list"></ul>
+        <div class="dir-browser-actions">
+          <button type="button" class="btn sm" id="lib-browser-up" data-i18n="lib.browseUp">Up</button>
+          <button type="button" class="btn sm accent" id="lib-browser-select" data-i18n="lib.browseSelect">Use this folder</button>
+        </div>
+      </div>
+    </label>
+    <label class="field">
+      <span data-i18n="lib.whitelist">Whitelist (Plex usernames, comma-separated)</span>
+      <input type="text" id="lib-whitelist" placeholder="alice, bob">
+    </label>
+    <div class="modal-actions">
+      <button class="btn" id="lib-cancel" data-i18n="common.cancel">Cancel</button>
+      <button class="btn accent" id="lib-save" data-i18n="common.save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- USER MODAL (admin) -->
+<div id="user-modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-title" id="user-modal-title" data-i18n="users.new">Add user</div>
+    <label class="field">
+      <span data-i18n="users.username">Plex username</span>
+      <input type="text" id="user-username" data-i18n-placeholder="users.usernamePlaceholder" placeholder="alice">
+      <small class="field-hint" data-i18n="users.usernameHint">The user must already have access to your Plex server. They sign in with Plex.</small>
+    </label>
+    <div class="field">
+      <span data-i18n="users.access">Library access</span>
+      <div id="user-libs" class="lib-checks"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="user-cancel" data-i18n="common.cancel">Cancel</button>
+      <button class="btn accent" id="user-save" data-i18n="common.save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ICON SPRITES (Tabler-style, MIT) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-camera"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 7h2l2 -2h6l2 2h2a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2M12 18a3 3 0 1 0 0 -6a3 3 0 0 0 0 6"/></g>
+    <g id="i-home"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12l-2 0l9 -9l9 9l-2 0M5 12v7a1 1 0 0 0 1 1h3m10 -8v7a1 1 0 0 1 -1 1h-3m-6 0v-6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v6m-4 0h4"/></g>
+    <g id="i-layout-grid"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 4h6v6h-6zM14 4h6v6h-6zM4 14h6v6h-6zM14 14h6v6h-6z"/></g>
+    <g id="i-settings"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></g>
+    <g id="i-users"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 7a3 3 0 1 0 0 6a3 3 0 0 0 0 -6M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2M16 3.13a4 4 0 0 1 0 7.75M21 21v-2a4 4 0 0 0 -3 -3.85"/></g>
+    <g id="i-photo"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 8h.01M4 4h16v16h-16zM4 15l4 -4a3 5 0 0 1 3 0l5 5M14 14l1 -1a3 5 0 0 1 3 0l2 2"/></g>
+    <g id="i-chevron-right"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6l-6 6"/></g>
+    <g id="i-chevron-left"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 6l-6 6l6 6"/></g>
+    <g id="i-play"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 4v16l13 -8z"/></g>
+    <g id="i-star"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></g>
+    <g id="i-plus"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/></g>
+    <g id="i-refresh"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></g>
+    <g id="i-edit"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 7h-1a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2 -2v-1M20.385 6.585a2.1 2.1 0 0 0 -2.97 -2.97l-8.415 8.385v3h3z"/></g>
+    <g id="i-trash"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></g>
+    <g id="i-x"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M18 6l-12 12M6 6l12 12"/></g>
+    <g id="i-login"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2M7 12h14l-3 -3M18 15l3 -3"/></g>
+    <g id="i-logout"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2M9 12h12l-3 -3M18 15l3 -3"/></g>
+    <g id="i-folder"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2"/></g>
+    <g id="i-info"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0M12 9h.01M11 12h1v4h1"/></g>
+    <g id="i-alert"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 9v4M12 17h.01M10.24 3.957l-8.422 14.06a1.989 1.989 0 0 0 1.7 2.983h16.845a1.989 1.989 0 0 0 1.7 -2.983l-8.423 -14.06a1.989 1.989 0 0 0 -3.4 0z"/></g>
+    <g id="i-dots"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h.01M12 12h.01M19 12h.01"/></g>
+    <g id="i-pen"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4M13.5 6.5l4 4"/></g>
+    <g id="i-check"><path fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M5 12l5 5l9 -9"/></g>
+    <g id="i-image"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 8h.01M4 4h16v16h-16zM4 15l4 -4a3 5 0 0 1 3 0l5 5M14 14l1 -1a3 5 0 0 1 3 0l2 2"/></g>
+    <g id="i-heart"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572"/></g>
+    <g id="i-heart-filled"><path fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6.979 3.074a6 6 0 0 1 4.988 1.425l.037 .033l.034 -.03a6 6 0 0 1 4.733 -1.44l.246 .036a6 6 0 0 1 3.364 10.008l-.18 .185l-.048 .041l-7.45 7.379a1 1 0 0 1 -1.313 .082l-.094 -.082l-7.493 -7.422a6 6 0 0 1 3.176 -10.284z"/></g>
+  </defs>
+</svg>
+
+<script src="/i18n.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
