@@ -49,6 +49,25 @@ git describe --tags --abbrev=0
    If dirty, warn the user — a dirty tree makes `git describe` emit `-dirty`
    and bakes an unclean version. Let them decide to commit/stash or continue.
 
+## Step 1b: Commit and push (if the tree is dirty)
+
+If the working tree has uncommitted changes and the user wants them in the
+release, commit them to `main` and push to the remote **before** tagging:
+
+1. Review the changes (`git diff`) and draft a clear, concise English commit
+   message describing the "why" of the change.
+2. Stage, commit, and push to `main`:
+
+```bash
+git add -A
+git commit -m "<subject>" -m "<body>"
+git push origin main
+```
+
+Notes for Windows/PowerShell: `&&` and heredocs are not supported — run each
+command separately and pass multi-line commit messages with repeated `-m`
+flags. Re-verify the tree is clean (`git status --porcelain`) after pushing.
+
 ## Step 2: Tag
 
 Create an annotated tag for the chosen version (default `<next>` from the wizard):
@@ -71,10 +90,16 @@ make release
 Equivalent manual steps if `make` is unavailable (e.g. plain Windows shell):
 
 ```bash
-docker build --build-arg VERSION=v1.3.0 -t plex-photos:v1.3.0 -t plex-photos:latest .
+docker build --build-arg VERSION=v1.3.0 -t angedelamort/plex-photos:v1.3.0 -t angedelamort/plex-photos:latest .
 mkdir -p dist
-docker save plex-photos:v1.3.0 | gzip > dist/plex-photos-v1.3.0.tar.gz
+docker save angedelamort/plex-photos:v1.3.0 angedelamort/plex-photos:latest | gzip > dist/plex-photos-v1.3.0.tar.gz
 ```
+
+The Docker image is named `angedelamort/plex-photos`. **Always export BOTH the
+versioned tag and `:latest`** in the same tarball (`docker save IMAGE LATEST`)
+so the imported image carries both — otherwise `:latest` is never updated on
+the target host. The exported artifact keeps the short
+`plex-photos-<version>.tar.gz` name.
 
 ## Step 4: Verify and report
 

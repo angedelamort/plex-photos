@@ -24,6 +24,17 @@
   .setup-actions { margin-top: 20px; }
   .setup-actions .btn { width: 100%; justify-content: center; padding: 11px; }
   .btn:disabled { opacity: 0.5; cursor: default; pointer-events: none; }
+  .setup-advanced { margin-bottom: 16px; }
+  .setup-advanced summary {
+    cursor: pointer; font-size: 13px; color: var(--text-muted);
+    list-style: none; user-select: none; padding: 4px 0;
+  }
+  .setup-advanced summary::-webkit-details-marker { display: none; }
+  .setup-advanced summary::before { content: "\25B8\00a0"; }
+  .setup-advanced[open] summary::before { content: "\25BE\00a0"; }
+  .setup-advanced summary:hover { color: var(--text); }
+  .setup-advanced[open] summary { margin-bottom: 12px; }
+  .setup-advanced .setup-field { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -39,27 +50,26 @@
       <label for="serverURL">Plex server URL</label>
       <div class="setup-input-row">
         <input type="text" id="serverURL" placeholder="http://192.168.1.10:32400" autocomplete="off" spellcheck="false">
-        <button class="btn" id="detect-btn" type="button">Detect</button>
+        <button class="btn" id="detect-btn" type="button">Check connection</button>
       </div>
-      <div class="field-hint">The local address of your Plex Media Server.</div>
+      <div class="field-hint">The local address of your Plex Media Server. Check the connection to continue.</div>
     </div>
 
-    <div class="setup-field">
-      <label for="machineId">Machine ID</label>
-      <input type="text" id="machineId" placeholder="Auto-detected, or paste manually" autocomplete="off" spellcheck="false">
-      <div class="field-hint">Click Detect to fetch it from the server, or enter it yourself.</div>
-    </div>
+    <input type="hidden" id="machineId">
 
-    <div class="setup-field">
-      <label for="publicBaseURL">Public base URL <span style="color:var(--text-muted)">(optional)</span></label>
-      <input type="text" id="publicBaseURL" placeholder="" autocomplete="off" spellcheck="false">
-      <div class="field-hint">Public URL used for the Plex sign-in callback. Defaults to this site's address.</div>
-    </div>
+    <details class="setup-advanced">
+      <summary>Advanced</summary>
+      <div class="setup-field">
+        <label for="publicBaseURL">Public base URL <span style="color:var(--text-muted)">(optional)</span></label>
+        <input type="text" id="publicBaseURL" placeholder="" autocomplete="off" spellcheck="false">
+        <div class="field-hint">Public URL used for the Plex sign-in callback. Auto-detected from this site's address; set it only if that's wrong (e.g. behind a reverse proxy).</div>
+      </div>
+    </details>
 
     <p class="setup-msg" id="msg"></p>
 
     <div class="setup-actions">
-      <button class="btn accent" id="save-btn" type="button">Save and continue</button>
+      <button class="btn accent" id="save-btn" type="button" disabled>Save and continue</button>
     </div>
   </div>
 </div>
@@ -99,6 +109,13 @@
     return data;
   }
 
+  // The save button stays disabled until the connection has been verified.
+  // Editing the server URL invalidates a previous successful check.
+  serverURL.addEventListener("input", () => {
+    saveBtn.disabled = true;
+    machineId.value = "";
+  });
+
   detectBtn.addEventListener("click", async () => {
     const url = serverURL.value.trim();
     if (!url) { setMsg("Enter the Plex server URL first.", "error"); return; }
@@ -107,8 +124,11 @@
     try {
       const data = await postJSON("/api/setup/identity", { serverURL: url });
       machineId.value = data.machineId || "";
-      setMsg("Machine ID detected.", "ok");
+      if (!machineId.value) throw new Error("Server reachable but no machine ID returned.");
+      setMsg("Connection verified.", "ok");
+      saveBtn.disabled = false;
     } catch (e) {
+      saveBtn.disabled = true;
       setMsg(e.message, "error");
     } finally {
       detectBtn.disabled = false;

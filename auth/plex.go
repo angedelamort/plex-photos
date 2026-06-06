@@ -58,6 +58,31 @@ func (p *PlexProvider) publicBaseURL() string {
 	return strings.TrimRight(p.state.Config().PublicBaseURL, "/")
 }
 
+// baseURLForRequest returns the configured PublicBaseURL when set, otherwise it
+// derives the base URL from the incoming request (honoring reverse-proxy
+// headers). This lets the Plex callback point back at whatever host the user
+// actually browsed to, without requiring PUBLIC_BASE_URL to be configured.
+func (p *PlexProvider) baseURLForRequest(r *http.Request) string {
+	if configured := p.publicBaseURL(); configured != "" {
+		return configured
+	}
+
+	scheme := "http"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = strings.TrimSpace(strings.Split(proto, ",")[0])
+	} else if r.TLS != nil {
+		scheme = "https"
+	}
+
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	host = strings.TrimSpace(strings.Split(host, ",")[0])
+
+	return strings.TrimRight(scheme+"://"+host, "/")
+}
+
 type plexPin struct {
 	ID   int    `json:"id"`
 	Code string `json:"code"`
@@ -104,7 +129,7 @@ func (p *PlexProvider) StartLogin(w http.ResponseWriter, r *http.Request) (strin
 		MaxAge:   600,
 	})
 
-	forwardURL := p.publicBaseURL() + "/auth/callback"
+	forwardURL := p.baseURLForRequest(r) + "/auth/callback"
 	authURL := plexAuthAppURL + "#?" + url.Values{
 		"clientID":                 {p.clientID()},
 		"code":                     {pin.Code},

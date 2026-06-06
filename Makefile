@@ -1,4 +1,5 @@
-APP     = plex-photos
+APP     = angedelamort/plex-photos
+ARTIFACT = plex-photos
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 IMAGE   = $(APP):$(VERSION)
 LATEST  = $(APP):latest
@@ -31,9 +32,9 @@ dev:
 ## Build + exporte un .tar.gz prêt pour Synology
 release: build
 	mkdir -p $(OUT_DIR)
-	docker save $(IMAGE) | gzip > $(OUT_DIR)/$(APP)-$(VERSION).tar.gz
+	docker save $(IMAGE) $(LATEST) | gzip > $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz
 	@echo ""
-	@echo "Prêt pour Synology : $(OUT_DIR)/$(APP)-$(VERSION).tar.gz"
+	@echo "Prêt pour Synology : $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz"
 	@echo "Container Manager → Registry → Ajouter → sélectionner le fichier"
 
 ## Nettoie les images et le dossier dist
