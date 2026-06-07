@@ -6,10 +6,11 @@
 # Do NOT use this in production.
 services:
   plex-photos:
-    # Match the image's `nobody` user, which owns /data and /photos.
-    user: "65534:65534"
     networks: !reset []
     environment:
+      # Local run: entrypoint (root) chowns /config to this user then drops to it.
+      PUID: "65534"
+      PGID: "65534"
       AUTH_PROVIDER: mock
       MOCK_USER: dev
       MOCK_ADMIN: "true"

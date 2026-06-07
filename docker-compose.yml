@@ -10,19 +10,17 @@ services:
     networks:
       - media
 
-    # --- Utilisateur & permissions ---
-    # UID:GID du process. Doit pouvoir LIRE les photos sur le NAS.
+    # --- Utilisateur & permissions (style linuxserver.io / arr) ---
+    # Le conteneur démarre en root, l'entrypoint chown /config vers PUID:PGID
+    # puis abandonne les privilèges. PUID doit pouvoir LIRE les photos sur le NAS.
     # Trouver l'UID:GID du propriétaire des fichiers : id $(whoami)
-    user: "1026:100"          # ex: utilisateur Synology = 1026, groupe users = 100
+    # NE PAS définir `user:` ici — l'entrypoint gère la bascule via su-exec.
 
     # --- Sécurité ---
-    read_only: true           # filesystem container en lecture seule
+    # Le filesystem ne peut pas être read_only : l'entrypoint doit chown /config.
+    # cap_drop ALL / no-new-privileges sont incompatibles avec le chown root → retirés.
     tmpfs:
       - /tmp                  # Go a besoin d'un /tmp pour les fichiers temporaires
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
 
     # --- Ressources (optionnel, recommandé sur Synology) ---
     mem_limit: 256m
@@ -31,6 +29,8 @@ services:
 
     # --- Variables d'environnement ---
     environment:
+      PUID: ${PUID:-1026}                  # UID propriétaire des photos NAS (ex: 1026)
+      PGID: ${PGID:-100}                   # GID (ex: users = 100)
       AUTH_PROVIDER: plex                  # "plex" en prod, "mock" en dev
       PLEX_SERVER_URL: http://plex:32400   # URL locale du serveur Plex
       PLEX_MACHINE_ID: ${PLEX_MACHINE_ID}  # Machine ID Plex (dans .env)

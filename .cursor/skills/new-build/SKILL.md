@@ -89,38 +89,56 @@ make release
 
 The Docker image is named `angedelamort/plex-photos`. **You MUST always build
 AND export BOTH tags at once — the versioned tag (`:v1.3.0`) and `:latest` —**
-so both are updated together. Tag the image with both in a single `docker build`
-(`-t IMAGE:VERSION -t IMAGE:latest`) and save both into the same tarball
-(`docker save IMAGE:VERSION IMAGE:latest`). If you skip `:latest`, the imported
-image never updates `latest` on the target host. The exported artifact keeps the
-short `plex-photos-<version>.tar.gz` name.
+because they serve different purposes: the versioned tag pins this exact release,
+while `:latest` is what the target host runs/updates by default. Tag the image
+with both in a single `docker build` (`-t IMAGE:VERSION -t IMAGE:latest`).
+
+**You MUST produce TWO separate tarball files, each containing only its own tag:**
+
+- `dist/plex-photos-<version>.tar.gz` — the image saved with the **`:v1.3.0`** tag.
+- `dist/plex-photos-latest.tar.gz` — the image saved with the **`:latest`** tag.
+
+Both are exported from the same freshly built image in the same run, so they
+always match. Do NOT bundle both tags into one tarball, and do NOT skip the
+`latest` file — without its own tarball the target host never gets an updated
+`:latest` image. Both files are overwritten fresh on every release.
 
 Equivalent manual steps if `make` is unavailable (e.g. plain Windows shell):
 
 ```bash
 docker build --build-arg VERSION=v1.3.0 -t angedelamort/plex-photos:v1.3.0 -t angedelamort/plex-photos:latest .
 mkdir -p dist
-docker save angedelamort/plex-photos:v1.3.0 angedelamort/plex-photos:latest | gzip > dist/plex-photos-v1.3.0.tar.gz
+docker save angedelamort/plex-photos:v1.3.0 | gzip > dist/plex-photos-v1.3.0.tar.gz
+docker save angedelamort/plex-photos:latest | gzip > dist/plex-photos-latest.tar.gz
 ```
 
 On Windows PowerShell, `make` and `gzip` are typically unavailable. Build with
-both tags, save an uncompressed tar (both tags), then gzip it via .NET:
+both tags, then save and gzip **each tag into its own tarball** via .NET. Define
+a small helper and call it once per tag:
 
 ```powershell
 docker build --build-arg VERSION=v1.3.0 -t angedelamort/plex-photos:v1.3.0 -t angedelamort/plex-photos:latest .
 New-Item -ItemType Directory -Force -Path dist | Out-Null
-docker save angedelamort/plex-photos:v1.3.0 angedelamort/plex-photos:latest -o dist/plex-photos-v1.3.0.tar
-$src = [System.IO.File]::OpenRead((Resolve-Path "dist/plex-photos-v1.3.0.tar"))
-$dst = [System.IO.File]::Create((Join-Path (Get-Location) "dist/plex-photos-v1.3.0.tar.gz"))
-$gz  = New-Object System.IO.Compression.GzipStream($dst, [System.IO.Compression.CompressionLevel]::Optimal)
-$src.CopyTo($gz); $gz.Close(); $dst.Close(); $src.Close()
-Remove-Item "dist/plex-photos-v1.3.0.tar"
+
+function Save-GzImage($tag, $outName) {
+  $tar = "dist/$outName.tar"
+  docker save $tag -o $tar
+  $src = [System.IO.File]::OpenRead((Resolve-Path $tar))
+  $dst = [System.IO.File]::Create((Join-Path (Get-Location) "dist/$outName.tar.gz"))
+  $gz  = New-Object System.IO.Compression.GzipStream($dst, [System.IO.Compression.CompressionLevel]::Optimal)
+  $src.CopyTo($gz); $gz.Close(); $dst.Close(); $src.Close()
+  Remove-Item $tar
+}
+
+Save-GzImage "angedelamort/plex-photos:v1.3.0" "plex-photos-v1.3.0"
+Save-GzImage "angedelamort/plex-photos:latest" "plex-photos-latest"
 ```
 
 ## Step 4: Verify and report
 
-1. Confirm the artifact exists: `dist/plex-photos-<version>.tar.gz`.
-2. Report to the user: the new version, the tag created, and the artifact path.
+1. Confirm BOTH artifacts exist and share the same fresh timestamp:
+   `dist/plex-photos-<version>.tar.gz` and `dist/plex-photos-latest.tar.gz`.
+2. Report to the user: the new version, the tag created, and both artifact paths.
 3. Remind them: import it in Synology Container Manager → Registry → Add, and
    that the app boots into the **first-run setup wizard** at `/setup` (no Plex
    env vars baked in — server URL / machine ID are entered there on first run).
