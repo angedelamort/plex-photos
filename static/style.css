@@ -192,7 +192,12 @@ body {
 .search-empty, .search-loading { padding: 14px 12px; font-size: 13px; color: var(--text-muted); text-align: center; }
 
 /* ── MAIN ── */
-.main { flex: 1; padding: 26px 28px; }
+/* min-width:0 lets this flex item shrink below its content's intrinsic width.
+   Without it, a carousel's .row-scroll reports its full content width as the
+   item's min size, so .main expands past the viewport: the page scrolls
+   horizontally and the carousel never detects overflow (so its nav arrows
+   never appear). Capping the width keeps the row scrolling internally. */
+.main { flex: 1; min-width: 0; padding: 26px 28px; }
 .loading, .empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
 
 .section-header {
@@ -289,19 +294,21 @@ body {
 .hero-backdrop { position: absolute; inset: 0; z-index: 0; }
 .hero-backdrop-img {
   position: absolute; inset: 0;
-  /* Top-aligned, horizontally centered. Scale to the full container height
-     (auto width) so the image's full height is always visible; any excess
-     width is cropped equally on both sides. Hidden when the window is too
-     small via the hero's overflow: hidden. */
-  background-size: auto 100%;
-  background-position: top center;
+  /* Cover the full width (and height) of the hero, cropping overflow. This
+     guarantees the backdrop always spans at least the container width. */
+  background-size: cover;
+  background-position: center;
   background-repeat: no-repeat;
 }
 .hero-backdrop-fade {
   position: absolute; inset: 0;
   background:
-    /* Soft fade over only the bottom ~60px of the backdrop. */
-    linear-gradient(0deg, var(--bg) 0px, rgba(20,20,20,0) 60px);
+    /* Dim the whole image so bright/white art doesn't blow out, plus a
+       stronger fade into the page background at the bottom and edges. */
+    /* Vertical: transparent-ish at top, fading into the page bg at the bottom (Plex-style). */
+    linear-gradient(0deg, var(--bg) 0%, rgba(20,20,20,0.6) 40%, rgba(20,20,20,0.35) 100%),
+    /* Horizontal: darken the left/right edges so the art blends into the layout. */
+    linear-gradient(90deg, rgba(20,20,20,0.5) 0%, rgba(20,20,20,0.15) 30%, rgba(20,20,20,0.15) 70%, rgba(20,20,20,0.5) 100%);
 }
 
 /* Breadcrumb overlaid at the top of the backdrop */

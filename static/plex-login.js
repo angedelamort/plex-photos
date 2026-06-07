@@ -196,6 +196,17 @@
       showError("");
       setStatus("Connecting\u2026");
       try {
+        // In mock/dev mode the Plex PIN popup flow doesn't apply; the backend
+        // logs us in via a simple redirect through /auth/login.
+        let provider = "plex";
+        try {
+          const res = await fetch("/api/auth/info");
+          if (res.ok) provider = (await res.json()).provider || "plex";
+        } catch (_) {}
+        if (provider === "mock") {
+          window.location.href = "/auth/login";
+          return;
+        }
         await login(setStatus);
         window.location.reload();
       } catch (e) {

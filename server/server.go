@@ -65,6 +65,17 @@ func NewMux(d Deps) *http.ServeMux {
 	// popup and polls plex.tv directly, then posts the resulting token here for
 	// validation. This needs no externally reachable callback URL, so it works
 	// regardless of how the user reached the app (localhost, LAN IP, proxy...).
+	// Tells the login screen which auth flow to use. In mock/dev mode the
+	// browser can't run the Plex PIN flow, so it falls back to a simple
+	// redirect through /auth/login.
+	mux.HandleFunc("GET /api/auth/info", func(w http.ResponseWriter, r *http.Request) {
+		provider := "plex"
+		if _, ok := d.Provider.(*auth.MockProvider); ok {
+			provider = "mock"
+		}
+		writeJSONOK(w, map[string]string{"provider": provider})
+	})
+
 	if plex, ok := d.Provider.(*auth.PlexProvider); ok {
 		mux.HandleFunc("GET /api/auth/plex/config", func(w http.ResponseWriter, r *http.Request) {
 			writeJSONOK(w, plex.ClientConfig())
