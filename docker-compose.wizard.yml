@@ -11,4 +11,3 @@ services:
       AUTH_PROVIDER: plex
       PLEX_SERVER_URL: ""
       PLEX_MACHINE_ID: ""
-      PUBLIC_BASE_URL: ""

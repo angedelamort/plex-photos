@@ -20,9 +20,10 @@ COPY --from=builder /app/static ./static
 # PLEX_MACHINE_ID, PUBLIC_BASE_URL) and SESSION_SECRET are provided at runtime.
 ENV TZ=America/Toronto
 
-# Default photos mount point; create it so the app starts even before a volume
-# is attached. Owned by nobody so the unprivileged runtime user can read it.
-RUN mkdir -p /photos /data && chown -R nobody /photos /data
+# Default photos + config mount points; create them so the app starts even
+# before a volume is attached. Owned by nobody so the unprivileged runtime user
+# can read/write. /config is the single arr-style persistent data dir.
+RUN mkdir -p /photos /config && chown -R nobody /photos /config
 EXPOSE 8099
 USER nobody
 ENTRYPOINT ["./plex-photos"]

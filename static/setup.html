@@ -57,15 +57,6 @@
 
     <input type="hidden" id="machineId">
 
-    <details class="setup-advanced">
-      <summary>Advanced</summary>
-      <div class="setup-field">
-        <label for="publicBaseURL">Public base URL <span style="color:var(--text-muted)">(optional)</span></label>
-        <input type="text" id="publicBaseURL" placeholder="" autocomplete="off" spellcheck="false">
-        <div class="field-hint">Public URL used for the Plex sign-in callback. Auto-detected from this site's address; set it only if that's wrong (e.g. behind a reverse proxy).</div>
-      </div>
-    </details>
-
     <p class="setup-msg" id="msg"></p>
 
     <div class="setup-actions">
@@ -84,13 +75,9 @@
   const $ = (id) => document.getElementById(id);
   const serverURL = $("serverURL");
   const machineId = $("machineId");
-  const publicBaseURL = $("publicBaseURL");
   const detectBtn = $("detect-btn");
   const saveBtn = $("save-btn");
   const msg = $("msg");
-
-  // Default the public base URL to the current origin as a sensible guess.
-  publicBaseURL.placeholder = window.location.origin;
 
   function setMsg(text, kind) {
     msg.textContent = text || "";
@@ -139,7 +126,6 @@
     const payload = {
       serverURL: serverURL.value.trim(),
       machineId: machineId.value.trim(),
-      publicBaseURL: publicBaseURL.value.trim(),
     };
     if (!payload.serverURL || !payload.machineId) {
       setMsg("Server URL and Machine ID are required.", "error");

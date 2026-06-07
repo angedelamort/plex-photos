@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -58,6 +59,39 @@ func NewMux(d Deps) *http.ServeMux {
 		d.Sessions.Clear(w)
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
+
+	// --- Plex popup login (client-side PIN flow) ---
+	// When the provider is Plex, the browser runs the Plex PIN flow itself in a
+	// popup and polls plex.tv directly, then posts the resulting token here for
+	// validation. This needs no externally reachable callback URL, so it works
+	// regardless of how the user reached the app (localhost, LAN IP, proxy...).
+	if plex, ok := d.Provider.(*auth.PlexProvider); ok {
+		mux.HandleFunc("GET /api/auth/plex/config", func(w http.ResponseWriter, r *http.Request) {
+			writeJSONOK(w, plex.ClientConfig())
+		})
+		mux.HandleFunc("POST /api/auth/plex/exchange", func(w http.ResponseWriter, r *http.Request) {
+			var in struct {
+				Token string `json:"token"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&in); err != nil {
+				writeJSONErr(w, http.StatusBadRequest, "invalid JSON")
+				return
+			}
+			user, err := plex.ExchangeToken(in.Token)
+			if err != nil {
+				writeJSONErr(w, http.StatusUnauthorized, err.Error())
+				return
+			}
+			if err := d.Sessions.Set(w, user); err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, "session error")
+				return
+			}
+			if err := d.Gallery.RecordLogin(user.Username, user.Email, user.IsAdmin); err != nil {
+				log.Printf("record login for %s: %v", user.Username, err)
+			}
+			writeJSONOK(w, map[string]bool{"ok": true})
+		})
+	}
 
 	// --- First-run setup wizard (unauthenticated; inert once configured) ---
 	if d.Setup != nil {

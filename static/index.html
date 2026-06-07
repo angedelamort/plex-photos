@@ -16,10 +16,11 @@
       plex-photos
     </div>
     <p class="login-sub" data-i18n="login.subtitle">Sign in with your Plex account to access your libraries.</p>
-    <a class="btn accent login-btn" href="/auth/login">
+    <button class="btn accent login-btn" id="plex-login-btn" type="button">
       <svg class="icon" viewBox="0 0 24 24"><use href="#i-login"/></svg>
-      <span data-i18n="login.button">Sign in with Plex</span>
-    </a>
+      <span id="plex-login-label" data-i18n="login.button">Sign in with Plex</span>
+    </button>
+    <p class="setup-msg error" id="login-error" hidden></p>
   </div>
 </div>
 
@@ -343,6 +344,7 @@
 </svg>
 
 <script src="/i18n.js"></script>
+<script src="/plex-login.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

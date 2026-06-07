@@ -65,9 +65,9 @@ go run .
 > `curl -s http://<plex-host>:32400/identity` (look for `machineIdentifier`).
 > `SESSION_SECRET` is optional — if unset, a random key is generated and stored
 > at `<DATA_PATH>/session.key` on first run (set the env var only to pin it).
-> `PUBLIC_BASE_URL` is optional too — if unset, the Plex callback URL is derived
-> from the host you browse to. Set it only when running behind a reverse proxy
-> that auto-detection can't infer, or to force a specific public URL.
+> Plex sign-in uses a client-side popup PIN flow (the browser talks to plex.tv
+> directly), so no public callback URL is needed and `PUBLIC_BASE_URL` is not
+> required — login works the same via `localhost`, a LAN IP, or a reverse proxy.
 
 ## Run with Docker
 
@@ -76,8 +76,6 @@ go run .
    ```env
    PLEX_SERVER_URL=http://<plex-host>:32400
    PLEX_MACHINE_ID=your-server-machine-id
-   # Optional: only set if callback auto-detection is wrong (e.g. behind a proxy)
-   # PUBLIC_BASE_URL=https://photos.example.com
    ```
 
    `SESSION_SECRET` is optional (auto-generated under the data volume on first
@@ -170,10 +168,9 @@ configured, so complete first-run setup on your local network.
 | `AUTH_PROVIDER` | | `plex` | Auth backend: `plex` or `mock` (dev) |
 | `PLEX_SERVER_URL` | | first-run wizard | Local Plex server URL. If unset, collected via the `/setup` wizard |
 | `PLEX_MACHINE_ID` | | first-run wizard | Plex server machine ID (validates server access). If unset, auto-detected/collected via the `/setup` wizard |
-| `PUBLIC_BASE_URL` | | request host | Public URL for the Plex OAuth callback. If unset, auto-detected from the incoming request (honoring `X-Forwarded-Proto` / `X-Forwarded-Host` behind a reverse proxy). Set it explicitly only if auto-detection is wrong. Overridable in the wizard |
 | `SESSION_SECRET` | | auto-generated | Cookie signing key. If unset, a random key is generated and persisted to `<DATA_PATH>/session.key` on first run |
 | `PHOTOS_PATH` | yes | `/photos` | Path to the photos mount |
-| `DATA_PATH` | yes | `/data` | Single mountable data dir (arr-style `/config`): holds the SQLite DB plus a `cache/` subfolder with `cache/thumbs` and `cache/art` (uploaded custom posters/backgrounds) |
+| `DATA_PATH` | yes | `/config` | Single mountable data dir (arr-style `/config`): holds the SQLite DB plus a `cache/` subfolder with `cache/thumbs` and `cache/art` (uploaded custom posters/backgrounds) |
 | `PORT` | | `8099` | HTTP listen port |
 | `THUMB_WIDTH` | | `400` | Thumbnail width in pixels |
 | `TZ` | | `UTC` | Timezone for logs |

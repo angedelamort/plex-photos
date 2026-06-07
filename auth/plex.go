@@ -230,6 +230,48 @@ func (p *PlexProvider) HandleCallback(w http.ResponseWriter, r *http.Request) (*
 	return &User{Username: username, Email: u.Email, IsAdmin: isAdmin}, nil
 }
 
+// ClientConfig is the minimal Plex client configuration the browser needs to
+// run the popup PIN flow itself (matching the server's product name so the
+// device shown on plex.tv is consistent).
+type ClientConfig struct {
+	Product string `json:"product"`
+}
+
+// ClientConfig returns the configuration the frontend popup flow needs.
+func (p *PlexProvider) ClientConfig() ClientConfig {
+	return ClientConfig{Product: p.Product}
+}
+
+// ExchangeToken validates a Plex auth token obtained client-side (via the popup
+// PIN flow) and returns the authenticated user. It mirrors HandleCallback's
+// validation but takes the token directly instead of polling a server-side PIN,
+// so no externally reachable callback URL is required.
+func (p *PlexProvider) ExchangeToken(token string) (*User, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, errors.New("missing plex token")
+	}
+
+	u, err := p.fetchUser(token)
+	if err != nil {
+		return nil, err
+	}
+
+	isAdmin, hasAccess, err := p.checkServerAccess(token)
+	if err != nil {
+		return nil, err
+	}
+	if !hasAccess && !isAdmin {
+		return nil, errors.New("user has no access to this Plex server")
+	}
+
+	username := u.Username
+	if username == "" {
+		username = u.Title
+	}
+	return &User{Username: username, Email: u.Email, IsAdmin: isAdmin}, nil
+}
+
 func (p *PlexProvider) pollToken(pinID string) (string, error) {
 	u := fmt.Sprintf("%s/%s", plexPinsURL, pinID)
 	req, err := http.NewRequest(http.MethodGet, u, nil)

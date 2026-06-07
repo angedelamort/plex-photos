@@ -87,6 +87,14 @@ baked in and exports the gzipped tarball:
 make release
 ```
 
+The Docker image is named `angedelamort/plex-photos`. **You MUST always build
+AND export BOTH tags at once — the versioned tag (`:v1.3.0`) and `:latest` —**
+so both are updated together. Tag the image with both in a single `docker build`
+(`-t IMAGE:VERSION -t IMAGE:latest`) and save both into the same tarball
+(`docker save IMAGE:VERSION IMAGE:latest`). If you skip `:latest`, the imported
+image never updates `latest` on the target host. The exported artifact keeps the
+short `plex-photos-<version>.tar.gz` name.
+
 Equivalent manual steps if `make` is unavailable (e.g. plain Windows shell):
 
 ```bash
@@ -95,11 +103,19 @@ mkdir -p dist
 docker save angedelamort/plex-photos:v1.3.0 angedelamort/plex-photos:latest | gzip > dist/plex-photos-v1.3.0.tar.gz
 ```
 
-The Docker image is named `angedelamort/plex-photos`. **Always export BOTH the
-versioned tag and `:latest`** in the same tarball (`docker save IMAGE LATEST`)
-so the imported image carries both — otherwise `:latest` is never updated on
-the target host. The exported artifact keeps the short
-`plex-photos-<version>.tar.gz` name.
+On Windows PowerShell, `make` and `gzip` are typically unavailable. Build with
+both tags, save an uncompressed tar (both tags), then gzip it via .NET:
+
+```powershell
+docker build --build-arg VERSION=v1.3.0 -t angedelamort/plex-photos:v1.3.0 -t angedelamort/plex-photos:latest .
+New-Item -ItemType Directory -Force -Path dist | Out-Null
+docker save angedelamort/plex-photos:v1.3.0 angedelamort/plex-photos:latest -o dist/plex-photos-v1.3.0.tar
+$src = [System.IO.File]::OpenRead((Resolve-Path "dist/plex-photos-v1.3.0.tar"))
+$dst = [System.IO.File]::Create((Join-Path (Get-Location) "dist/plex-photos-v1.3.0.tar.gz"))
+$gz  = New-Object System.IO.Compression.GzipStream($dst, [System.IO.Compression.CompressionLevel]::Optimal)
+$src.CopyTo($gz); $gz.Close(); $dst.Close(); $src.Close()
+Remove-Item "dist/plex-photos-v1.3.0.tar"
+```
 
 ## Step 4: Verify and report
 

@@ -36,7 +36,7 @@ func Load() (*Config, error) {
 		PlexMachineID: os.Getenv("PLEX_MACHINE_ID"),
 		PublicBaseURL: os.Getenv("PUBLIC_BASE_URL"),
 		PhotosPath:    getEnv("PHOTOS_PATH", "/photos"),
-		DataPath:      getEnv("DATA_PATH", "/data"),
+		DataPath:      getEnv("DATA_PATH", "/config"),
 		SessionSecret: os.Getenv("SESSION_SECRET"),
 		Port:          getEnv("PORT", "8099"),
 		TimeZone:      getEnv("TZ", "UTC"),

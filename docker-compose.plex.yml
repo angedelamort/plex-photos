@@ -3,7 +3,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.plex.yml up -d
 #
-# Requires PLEX_SERVER_URL, PLEX_MACHINE_ID and PUBLIC_BASE_URL in .env.
+# Requires PLEX_SERVER_URL and PLEX_MACHINE_ID in .env.
 # SESSION_SECRET is optional (auto-generated under /data on first run).
 services:
   plex-photos:
@@ -14,7 +14,6 @@ services:
       AUTH_PROVIDER: plex
       PLEX_SERVER_URL: ${PLEX_SERVER_URL}
       PLEX_MACHINE_ID: ${PLEX_MACHINE_ID}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
     volumes:
       - ./testdata/photos:/photos:ro
 

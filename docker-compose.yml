@@ -11,9 +11,9 @@ services:
       - media
 
     # --- Utilisateur & permissions ---
-    # Doit correspondre au propriétaire des fichiers photos sur le NAS
-    # Pour trouver ton PUID/PGID : id $(whoami)
-    user: "1026:100"          # PUID:PGID (ex: utilisateur Synology = 1026, groupe users = 100)
+    # UID:GID du process. Doit pouvoir LIRE les photos sur le NAS.
+    # Trouver l'UID:GID du propriétaire des fichiers : id $(whoami)
+    user: "1026:100"          # ex: utilisateur Synology = 1026, groupe users = 100
 
     # --- Sécurité ---
     read_only: true           # filesystem container en lecture seule
@@ -34,10 +34,9 @@ services:
       AUTH_PROVIDER: plex                  # "plex" en prod, "mock" en dev
       PLEX_SERVER_URL: http://plex:32400   # URL locale du serveur Plex
       PLEX_MACHINE_ID: ${PLEX_MACHINE_ID}  # Machine ID Plex (dans .env)
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}  # URL publique pour le retour OAuth Plex
       PHOTOS_PATH: /photos
-      DATA_PATH: /data
-      SESSION_SECRET: ${SESSION_SECRET:-}  # Optionnel : auto-généré dans /data si vide
+      DATA_PATH: /config
+      SESSION_SECRET: ${SESSION_SECRET:-}  # Optionnel : auto-généré dans /config si vide
       THUMB_WIDTH: 400
       PORT: ${PORT:-8099}
       TZ: America/Toronto
@@ -45,7 +44,7 @@ services:
     # --- Volumes ---
     volumes:
       - /volume1/photos:/photos:ro         # Dossier photos NAS — read-only strict
-      - plex-photos-data:/data             # SQLite + cache (thumbnails + custom art) — persisté
+      - plex-photos-data:/config           # SQLite + cache (thumbnails + custom art) — persisté (arr-style /config)
 
 volumes:
   plex-photos-data:
