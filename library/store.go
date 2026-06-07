@@ -668,6 +668,103 @@ func (s *Store) ClearScanErrors() error {
 	return err
 }
 
+// Job status values.
+const (
+	JobRunning = "running"
+	JobSuccess = "success"
+	JobFailed  = "failed"
+)
+
+// Job type values.
+const (
+	JobTypeScan      = "scan"
+	JobTypeThumbnail = "thumbnails"
+)
+
+// maxJobHistory caps how many finished job rows are retained. Running jobs are
+// never pruned; on insert, finished rows beyond this count are removed.
+const maxJobHistory = 20
+
+// Job is a single background job run with live progress and a final status.
+type Job struct {
+	ID         string     `json:"id"`
+	Type       string     `json:"type"`
+	Target     string     `json:"target"`
+	Status     string     `json:"status"`
+	Phase      string     `json:"phase"`
+	Total      int        `json:"total"`
+	Done       int        `json:"done"`
+	Message    string     `json:"message"`
+	StartedAt  time.Time  `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt"`
+}
+
+// CreateJob inserts a new running job row and returns its ID.
+func (s *Store) CreateJob(id, jobType, target string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO jobs (id, type, target, status, started_at) VALUES (?, ?, ?, ?, ?)`,
+		id, jobType, target, JobRunning, time.Now())
+	return err
+}
+
+// UpdateJobProgress updates the live progress fields of a running job.
+func (s *Store) UpdateJobProgress(id, phase string, done, total int) error {
+	_, err := s.db.Exec(
+		`UPDATE jobs SET phase = ?, done = ?, total = ? WHERE id = ?`,
+		phase, done, total, id)
+	return err
+}
+
+// FinishJob marks a job as completed (success or failed) and prunes the history
+// so only the most recent maxJobHistory finished jobs are retained.
+func (s *Store) FinishJob(id, status, message string) error {
+	if _, err := s.db.Exec(
+		`UPDATE jobs SET status = ?, message = ?, phase = '', finished_at = ? WHERE id = ?`,
+		status, message, time.Now(), id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(
+		`DELETE FROM jobs WHERE status != ? AND id NOT IN (
+			SELECT id FROM jobs WHERE status != ? ORDER BY started_at DESC LIMIT ?
+		)`, JobRunning, JobRunning, maxJobHistory)
+	return err
+}
+
+// ListJobs returns recorded jobs, most recent first.
+func (s *Store) ListJobs() ([]*Job, error) {
+	rows, err := s.db.Query(
+		`SELECT id, type, COALESCE(target, ''), status, COALESCE(phase, ''),
+		        total, done, COALESCE(message, ''), started_at, finished_at
+		 FROM jobs ORDER BY started_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Job{}
+	for rows.Next() {
+		var j Job
+		var finished sql.NullTime
+		if err := rows.Scan(&j.ID, &j.Type, &j.Target, &j.Status, &j.Phase,
+			&j.Total, &j.Done, &j.Message, &j.StartedAt, &finished); err != nil {
+			return nil, err
+		}
+		if finished.Valid {
+			j.FinishedAt = &finished.Time
+		}
+		out = append(out, &j)
+	}
+	return out, rows.Err()
+}
+
+// MarkStaleJobsFailed flips any jobs left in the "running" state (e.g. due to a
+// process crash/restart) to failed, since they can no longer make progress.
+func (s *Store) MarkStaleJobsFailed() error {
+	_, err := s.db.Exec(
+		`UPDATE jobs SET status = ?, message = ?, finished_at = ? WHERE status = ?`,
+		JobFailed, "interrupted by restart", time.Now(), JobRunning)
+	return err
+}
+
 // FindNodeByPath returns the node whose fs_path matches, if any.
 func (s *Store) FindNodeByPath(fsPath string) (*Node, error) {
 	n, err := scanNode(s.db.QueryRow(`SELECT `+nodeCols+` FROM nodes WHERE fs_path = ?`, fsPath))

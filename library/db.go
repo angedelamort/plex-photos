@@ -104,6 +104,24 @@ CREATE TABLE IF NOT EXISTS scan_errors (
   occurred_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Persistent log of background jobs (library scans, thumbnail regeneration).
+-- One row per job run with live progress fields and a final status, so the
+-- admin Jobs page can show the active job plus a history of recent runs.
+-- Capped to the most recent N finished rows by the store on insert.
+CREATE TABLE IF NOT EXISTS jobs (
+  id           TEXT PRIMARY KEY,
+  type         TEXT NOT NULL,
+  target       TEXT,
+  status       TEXT NOT NULL,
+  phase        TEXT,
+  total        INTEGER NOT NULL DEFAULT 0,
+  done         INTEGER NOT NULL DEFAULT 0,
+  message      TEXT,
+  started_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  finished_at  DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_started ON jobs(started_at);
 CREATE INDEX IF NOT EXISTS idx_nodes_library ON nodes(library_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_access_library ON library_access(library_id);

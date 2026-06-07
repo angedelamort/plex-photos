@@ -57,6 +57,12 @@ func main() {
 	galleryHandler := library.NewHandler(store, scanner, thumbs, artDir)
 	galleryHandler.SetVersion(version)
 
+	// Background job manager: runs library scans and thumbnail regeneration as
+	// serialized, tracked jobs surfaced on the admin Jobs page.
+	jobs := library.NewJobManager(store)
+	jobs.Recover()
+	galleryHandler.SetJobManager(jobs)
+
 	// Plex-like auto-detection of new content: a filesystem watcher over the
 	// library roots plus an admin-configurable periodic rescan.
 	autoScan := library.NewAutoScanner(store, scanner)

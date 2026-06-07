@@ -22,6 +22,7 @@ type Handler struct {
 	scanner  *Scanner
 	autoScan *AutoScanner
 	thumbs   *Thumbnailer
+	jobs     *JobManager
 	artDir   string
 	version  string
 }
@@ -43,6 +44,10 @@ func NewHandler(store *Store, scanner *Scanner, thumbs *Thumbnailer, artDir stri
 // SetAutoScanner wires the auto-scanner so admin settings endpoints can read
 // and update the periodic rescan interval at runtime.
 func (h *Handler) SetAutoScanner(a *AutoScanner) { h.autoScan = a }
+
+// SetJobManager wires the background job manager used to run library scans and
+// thumbnail regeneration as tracked jobs.
+func (h *Handler) SetJobManager(j *JobManager) { h.jobs = j }
 
 // RecordLogin records a successful sign-in for the given user, keeping the
 // users table in sync with whoever actually authenticates via Plex. Errors are
@@ -298,14 +303,80 @@ func (h *Handler) AdminScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Run the scan in the background so the client can poll progress and show
-	// a Plex-like scanning banner.
-	go func() {
-		if err := h.scanner.Scan(lib, "manual"); err != nil {
-			log.Printf("scan library %s failed: %v", lib.ID, err)
-		}
-	}()
+	// Run the scan as a tracked background job so the client can poll progress
+	// and show a Plex-like scanning banner, and it appears on the Jobs page.
+	if h.jobs != nil {
+		h.jobs.Enqueue(JobTypeScan, lib.Name, func(p *JobProgress) error {
+			if err := h.scanner.ScanJob(lib, "manual", p); err != nil {
+				log.Printf("scan library %s failed: %v", lib.ID, err)
+				return err
+			}
+			return nil
+		})
+	} else {
+		go func() {
+			if err := h.scanner.Scan(lib, "manual"); err != nil {
+				log.Printf("scan library %s failed: %v", lib.ID, err)
+			}
+		}()
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "libraryId": id})
+}
+
+// AdminListJobs returns the recorded background jobs (active + recent history).
+func (h *Handler) AdminListJobs(w http.ResponseWriter, r *http.Request) {
+	if h.jobs == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	jobs, err := h.jobs.List()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+// AdminRegenerateThumbnails enqueues thumbnail regeneration jobs. With a
+// {id} path value it targets one library; otherwise it regenerates every
+// library's thumbnails (one job per library, run serially).
+func (h *Handler) AdminRegenerateThumbnails(w http.ResponseWriter, r *http.Request) {
+	if h.jobs == nil {
+		writeErr(w, http.StatusServiceUnavailable, "job manager unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	var libs []*Library
+	if id != "" {
+		lib, err := h.store.GetLibrary(id)
+		if errors.Is(err, ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "library not found")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		libs = []*Library{lib}
+	} else {
+		all, err := h.store.ListLibraries()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		libs = all
+	}
+	for _, lib := range libs {
+		lib := lib
+		h.jobs.Enqueue(JobTypeThumbnail, lib.Name, func(p *JobProgress) error {
+			if err := h.scanner.RegenerateThumbnails(lib, p); err != nil {
+				log.Printf("regenerate thumbnails %s failed: %v", lib.ID, err)
+				return err
+			}
+			return nil
+		})
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "count": len(libs)})
 }
 
 // AdminScanProgress reports the live progress of a library scan.

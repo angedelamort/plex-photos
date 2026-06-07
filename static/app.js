@@ -267,6 +267,7 @@ function routeToPath(route) {
     case "node": return `/library/${route.libraryId}/node/${route.nodeId}`;
     case "admin": return "/admin";
     case "users": return "/users";
+    case "jobs": return "/jobs";
     case "errors": return "/errors";
     case "settings": return "/settings";
     default: return "/";
@@ -280,6 +281,7 @@ function pathToRoute(pathname) {
   if (parts.length === 0) return { view: "home" };
   if (parts[0] === "admin") return { view: "admin" };
   if (parts[0] === "users") return { view: "users" };
+  if (parts[0] === "jobs") return { view: "jobs" };
   if (parts[0] === "errors") return { view: "errors" };
   if (parts[0] === "settings") return { view: "settings" };
   if (parts[0] === "library" && parts[1]) {
@@ -314,6 +316,7 @@ async function navigate(route, opts = {}) {
       case "node": await renderNode(main, route); break;
       case "admin": setActiveSidebar(null, true); await renderAdmin(main); break;
       case "users": setActiveSidebar(null, "users"); await renderAdminUsers(main); break;
+      case "jobs": setActiveSidebar(null, "jobs"); await renderJobs(main); break;
       case "errors": setActiveSidebar(null, "errors"); await renderErrorLog(main); break;
       case "settings": setActiveSidebar(null); renderSettings(main); break;
     }
@@ -657,6 +660,15 @@ function carousel(cards, opts = {}) {
   return wrap;
 }
 
+// A wrapping grid of cards: unlike `carousel`, this lays every card out in a
+// multi-row grid so large folders (e.g. 30 albums) are all visible at once
+// instead of hidden behind a single horizontal scroller.
+function cardGrid(cards, opts = {}) {
+  const grid = el("div", { class: "card-grid" + (opts.variant ? " card-grid--" + opts.variant : "") });
+  cards.forEach((c) => grid.appendChild(c));
+  return grid;
+}
+
 // renderNode renders a single tree node: sub-collections as a grid on top
 // (when present) and the node's own photos below (when present). A node may be
 // a collection, an album, or both at once.
@@ -758,7 +770,7 @@ async function renderNode(main, route) {
       if (c.favorite) state.favorites.add(c.id);
       return nodeCard(route.libraryId, c);
     });
-    block.appendChild(carousel(cards, { variant: "landscape" }));
+    block.appendChild(cardGrid(cards, { variant: "landscape" }));
     main.appendChild(block);
   }
 
@@ -770,7 +782,7 @@ async function renderNode(main, route) {
       if (c.favorite) state.favorites.add(c.id);
       return nodeCard(route.libraryId, c, { poster: true, parent: node.name });
     });
-    block.appendChild(carousel(cards, { variant: "poster" }));
+    block.appendChild(cardGrid(cards, { variant: "poster" }));
     main.appendChild(block);
   }
 
@@ -1413,33 +1425,40 @@ async function buildRowLimitPanel() {
 async function renderAdmin(main) {
   const libs = await api("/api/admin/libraries");
   main.innerHTML = "";
-  const header = el("div", { class: "section-header" });
-  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("admin.title"))}</div><div class="section-sub">${esc(t("admin.subtitle"))}</div>` }));
-  header.appendChild(el("button", { class: "btn accent", html: `${icon("plus")} ${esc(t("admin.newLibrary"))}`, onclick: () => openLibModal(null) }));
-  main.appendChild(header);
+
+  // ── Section 1: Libraries ──
+  const libHeader = el("div", { class: "section-header" });
+  libHeader.appendChild(el("div", { html: `<div class="section-title">${esc(t("admin.librariesTitle"))}</div><div class="section-sub">${esc(t("admin.librariesSub"))}</div>` }));
+  libHeader.appendChild(el("button", { class: "btn accent", html: `${icon("plus")} ${esc(t("admin.newLibrary"))}`, onclick: () => openLibModal(null) }));
+  main.appendChild(libHeader);
+
+  if (libs.length === 0) {
+    main.appendChild(el("div", { class: "empty", text: t("admin.noLibrary") }));
+  } else {
+    libs.forEach((lib) => {
+      const row = el("div", { class: "lib-row" });
+      row.appendChild(el("div", {
+        html: `<div class="lib-name">${esc(lib.name)}</div><div class="lib-path">${esc(lib.rootPath)} &nbsp;·&nbsp; ${esc((lib.whitelist || []).join(", ") || "—")}</div>`,
+      }));
+      const actions = el("div", { class: "lib-actions" });
+      actions.appendChild(el("span", { class: "pill", text: t("meta.collections", { n: lib.collectionCount }) }));
+      actions.appendChild(el("button", { class: "btn sm", html: `${icon("refresh")} ${esc(t("admin.scan"))}`, onclick: (ev) => scanLibrary(lib.id, ev.currentTarget) }));
+      actions.appendChild(el("button", { class: "btn sm", title: t("jobs.regenerate"), html: `${icon("refresh")} ${esc(t("jobs.regenerateShort"))}`, onclick: (ev) => regenerateThumbnails(lib.id, ev.currentTarget) }));
+      actions.appendChild(el("button", { class: "btn sm", html: icon("edit"), onclick: () => openLibModal(lib) }));
+      actions.appendChild(el("button", { class: "btn sm danger", html: icon("trash"), onclick: () => deleteLibrary(lib) }));
+      row.appendChild(actions);
+      main.appendChild(row);
+    });
+  }
+
+  // ── Section 2: Library management (settings) ──
+  const settingsHeader = el("div", { class: "section-header" });
+  settingsHeader.appendChild(el("div", { html: `<div class="section-title">${esc(t("admin.settingsTitle"))}</div><div class="section-sub">${esc(t("admin.settingsSub"))}</div>` }));
+  main.appendChild(settingsHeader);
 
   main.appendChild(await buildAutoScanPanel());
   main.appendChild(await buildThumbWorkersPanel());
   main.appendChild(await buildRowLimitPanel());
-
-  if (libs.length === 0) {
-    main.appendChild(el("div", { class: "empty", text: t("admin.noLibrary") }));
-    return;
-  }
-
-  libs.forEach((lib) => {
-    const row = el("div", { class: "lib-row" });
-    row.appendChild(el("div", {
-      html: `<div class="lib-name">${esc(lib.name)}</div><div class="lib-path">${esc(lib.rootPath)} &nbsp;·&nbsp; ${esc((lib.whitelist || []).join(", ") || "—")}</div>`,
-    }));
-    const actions = el("div", { class: "lib-actions" });
-    actions.appendChild(el("span", { class: "pill", text: t("meta.collections", { n: lib.collectionCount }) }));
-    actions.appendChild(el("button", { class: "btn sm", html: `${icon("refresh")} ${esc(t("admin.scan"))}`, onclick: (ev) => scanLibrary(lib.id, ev.currentTarget) }));
-    actions.appendChild(el("button", { class: "btn sm", html: icon("edit"), onclick: () => openLibModal(lib) }));
-    actions.appendChild(el("button", { class: "btn sm danger", html: icon("trash"), onclick: () => deleteLibrary(lib) }));
-    row.appendChild(actions);
-    main.appendChild(row);
-  });
 }
 
 // ── admin: users / library access ──
@@ -1525,6 +1544,120 @@ async function clearErrorLog() {
     await renderErrorLog($("#main"));
   } catch (e) {
     alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// ── admin: jobs ──
+let jobsPollTimer = null;
+
+async function renderJobs(main) {
+  if (jobsPollTimer) { clearTimeout(jobsPollTimer); jobsPollTimer = null; }
+  main.innerHTML = "";
+
+  const header = el("div", { class: "section-header" });
+  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("jobs.title"))}</div><div class="section-sub">${esc(t("jobs.subtitle"))}</div>` }));
+  header.appendChild(el("button", {
+    class: "btn accent",
+    html: `${icon("refresh")} ${esc(t("jobs.regenerateAll"))}`,
+    onclick: (ev) => regenerateThumbnails(null, ev.currentTarget),
+  }));
+  main.appendChild(header);
+
+  const list = el("div", { id: "jobs-list" });
+  main.appendChild(list);
+
+  await refreshJobs(list);
+}
+
+async function refreshJobs(list) {
+  let jobs;
+  try {
+    jobs = await api("/api/admin/jobs");
+  } catch (e) {
+    list.innerHTML = `<div class="empty">${esc(t("alert.error", { msg: e.message }))}</div>`;
+    return;
+  }
+  // Bail out if the user navigated away while the request was in flight.
+  if (!document.body.contains(list)) return;
+
+  list.innerHTML = "";
+  if (!jobs || jobs.length === 0) {
+    list.appendChild(el("div", { class: "empty", text: t("jobs.none") }));
+    return;
+  }
+
+  let anyRunning = false;
+  jobs.forEach((j) => {
+    if (j.status === "running") anyRunning = true;
+    list.appendChild(buildJobRow(j));
+  });
+
+  // Poll while a job is active so progress updates live.
+  if (anyRunning) {
+    jobsPollTimer = setTimeout(() => refreshJobs(list), 1000);
+  }
+}
+
+function jobTypeLabel(type) {
+  if (type === "scan") return t("jobs.typeScan");
+  if (type === "thumbnails") return t("jobs.typeThumbnails");
+  return type;
+}
+
+function buildJobRow(j) {
+  const row = el("div", { class: "lib-row" });
+  const target = j.target || "—";
+  const left = el("div");
+
+  let statusPill;
+  if (j.status === "running") {
+    statusPill = `<span class="pill">${esc(t("jobs.running"))}</span>`;
+  } else if (j.status === "success") {
+    statusPill = `<span class="pill pill-ok">${esc(t("jobs.success"))}</span>`;
+  } else {
+    statusPill = `<span class="pill pill-danger">${esc(t("jobs.failed"))}</span>`;
+  }
+
+  left.appendChild(el("div", {
+    class: "lib-name",
+    html: `${esc(jobTypeLabel(j.type))} · ${esc(target)} ${statusPill}`,
+  }));
+
+  if (j.status === "running") {
+    const total = j.total || 0;
+    const done = j.done || 0;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const phase = j.phase ? `${esc(t("jobs.phase." + j.phase) || j.phase)} · ` : "";
+    const detail = total > 0 ? `${phase}${done}/${total} (${pct}%)` : (j.phase || t("jobs.running"));
+    const bar = el("div", { class: "job-progress" });
+    bar.appendChild(el("div", { class: "job-progress-bar", style: `width:${pct}%` }));
+    left.appendChild(el("div", { class: "lib-path", text: detail }));
+    left.appendChild(bar);
+  } else if (j.status === "failed" && j.message) {
+    left.appendChild(el("div", { class: "lib-path err-msg", text: j.message }));
+  }
+  row.appendChild(left);
+
+  const when = j.finishedAt ? new Date(j.finishedAt).toLocaleString()
+    : (j.startedAt ? new Date(j.startedAt).toLocaleString() : "");
+  row.appendChild(el("div", { class: "lib-actions" }, [
+    el("span", { class: "section-sub", text: when }),
+  ]));
+  return row;
+}
+
+async function regenerateThumbnails(libId, btn) {
+  const url = libId
+    ? `/api/admin/libraries/${libId}/regenerate-thumbnails`
+    : "/api/admin/jobs/regenerate-thumbnails";
+  if (btn) btn.disabled = true;
+  try {
+    await api(url, { method: "POST" });
+    await navigate({ view: "jobs" });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

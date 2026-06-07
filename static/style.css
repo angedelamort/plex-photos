@@ -289,13 +289,19 @@ body {
 .hero-backdrop { position: absolute; inset: 0; z-index: 0; }
 .hero-backdrop-img {
   position: absolute; inset: 0;
-  background-size: cover; background-position: center;
+  /* Top-aligned, horizontally centered. Scale to the full container height
+     (auto width) so the image's full height is always visible; any excess
+     width is cropped equally on both sides. Hidden when the window is too
+     small via the hero's overflow: hidden. */
+  background-size: auto 100%;
+  background-position: top center;
+  background-repeat: no-repeat;
 }
 .hero-backdrop-fade {
   position: absolute; inset: 0;
   background:
-    linear-gradient(90deg, rgba(20,20,20,0.85) 0%, rgba(20,20,20,0.45) 50%, rgba(20,20,20,0.15) 100%),
-    linear-gradient(0deg, var(--bg) 0%, rgba(20,20,20,0.35) 45%, rgba(20,20,20,0) 100%);
+    /* Soft fade over only the bottom ~60px of the backdrop. */
+    linear-gradient(0deg, var(--bg) 0px, rgba(20,20,20,0) 60px);
 }
 
 /* Breadcrumb overlaid at the top of the backdrop */
@@ -449,6 +455,16 @@ body {
 }
 .lib-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 .pill-admin { background: rgba(15,184,132,0.14); color: var(--accent); }
+.pill-ok { background: rgba(15,184,132,0.14); color: var(--accent); }
+.pill-danger { background: rgba(229,77,77,0.16); color: #ff7676; }
+.job-progress {
+  margin-top: 8px; height: 6px; border-radius: 3px;
+  background: rgba(255,255,255,0.07); overflow: hidden; max-width: 420px;
+}
+.job-progress-bar {
+  height: 100%; background: var(--accent); border-radius: 3px;
+  transition: width 0.3s ease;
+}
 .lib-checks {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 8px 16px; margin-top: 8px;
@@ -479,6 +495,12 @@ body {
 .carousel--landscape .row-scroll .card { width: 300px; max-width: 300px; }
 .carousel--poster .row-scroll .card { width: 200px; }
 
+/* ── CARD GRID (wrapping, shows every card) ── */
+.card-grid { display: grid; gap: 16px; justify-content: start; align-items: start; }
+.card-grid--poster { grid-template-columns: repeat(auto-fill, minmax(160px, 200px)); }
+.card-grid--landscape { grid-template-columns: repeat(auto-fill, minmax(260px, 300px)); }
+.card-grid .card { width: 100%; max-width: none; }
+
 .carousel-nav {
   position: absolute; top: 0; bottom: 6px; z-index: 4;
   width: 48px; display: flex; align-items: center; justify-content: center;
@@ -490,6 +512,9 @@ body {
   border: 0.5px solid var(--border); }
 .carousel-prev { left: 0; background: linear-gradient(to right, rgba(0,0,0,0.45), transparent); justify-content: flex-start; }
 .carousel-next { right: 0; background: linear-gradient(to left, rgba(0,0,0,0.45), transparent); justify-content: flex-end; }
+/* Show a nav button whenever there is content to scroll toward in that
+   direction; brighten on hover. Buttons disable (and hide) at the ends. */
+.carousel.has-overflow .carousel-nav { opacity: 0.85; }
 .carousel.has-overflow:hover .carousel-nav { opacity: 1; }
 .carousel-nav.disabled { opacity: 0 !important; pointer-events: none; }
 

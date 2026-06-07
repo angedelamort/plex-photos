@@ -134,14 +134,27 @@ func (sc *Scanner) updateProgress(libraryID string, fn func(*ScanProgress)) {
 // (level 1) and albums (level 2) into the database. Stale entries are removed.
 // It also reports progress so callers can render a live banner.
 func (sc *Scanner) Scan(lib *Library, source string) error {
+	return sc.scanWithJob(lib, source, nil)
+}
+
+// ScanJob runs a full scan while reporting progress to a JobManager job so the
+// admin Jobs page can show live progress and history.
+func (sc *Scanner) ScanJob(lib *Library, source string, jp *JobProgress) error {
+	return sc.scanWithJob(lib, source, jp)
+}
+
+func (sc *Scanner) scanWithJob(lib *Library, source string, jp *JobProgress) error {
 	sc.setProgress(ScanProgress{LibraryID: lib.ID, Running: true, Phase: "index"})
+	if jp != nil {
+		jp.SetPhase("index", 0)
+	}
 
 	err := sc.scan(lib)
 
 	// Phase 2: pre-generate thumbnails for the whole library so a finished scan
 	// means thumbnails are ready (rather than lazily generated on first view).
 	if err == nil && sc.thumbs != nil {
-		sc.generateThumbnails(lib)
+		sc.generateThumbnails(lib, jp)
 	}
 
 	sc.updateProgress(lib.ID, func(p *ScanProgress) {
@@ -234,7 +247,7 @@ func (sc *Scanner) scan(lib *Library) error {
 // photo in the library so the gallery renders instantly after a scan. Work is
 // spread across a small worker pool; failures on individual images are logged
 // but do not abort the phase. Progress is reported via ThumbTotal/ThumbDone.
-func (sc *Scanner) generateThumbnails(lib *Library) {
+func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 	albumDirs, err := findAlbumDirs(lib.RootPath)
 	if err != nil {
 		log.Printf("thumbnail phase: list albums for %s: %v", lib.ID, err)
@@ -252,13 +265,17 @@ func (sc *Scanner) generateThumbnails(lib *Library) {
 		}
 	}
 
+	total := len(rels)
 	sc.updateProgress(lib.ID, func(p *ScanProgress) {
 		p.Phase = "thumbnails"
-		p.ThumbTotal = len(rels)
+		p.ThumbTotal = total
 		p.ThumbDone = 0
 		p.CurrentDir = ""
 	})
-	if len(rels) == 0 {
+	if jp != nil {
+		jp.SetPhase("thumbnails", total)
+	}
+	if total == 0 {
 		return
 	}
 
@@ -267,6 +284,8 @@ func (sc *Scanner) generateThumbnails(lib *Library) {
 		workers = 1
 	}
 
+	var doneMu sync.Mutex
+	done := 0
 	jobs := make(chan string)
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
@@ -278,6 +297,13 @@ func (sc *Scanner) generateThumbnails(lib *Library) {
 					log.Printf("thumbnail %q: %v", rel, err)
 				}
 				sc.updateProgress(lib.ID, func(p *ScanProgress) { p.ThumbDone++ })
+				if jp != nil {
+					doneMu.Lock()
+					done++
+					n := done
+					doneMu.Unlock()
+					jp.SetProgress(n, total)
+				}
 			}
 		}()
 	}
@@ -286,6 +312,16 @@ func (sc *Scanner) generateThumbnails(lib *Library) {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// RegenerateThumbnails forces regeneration of every thumbnail in a library
+// without re-indexing the folder tree, reporting progress to the given job.
+func (sc *Scanner) RegenerateThumbnails(lib *Library, jp *JobProgress) error {
+	if sc.thumbs == nil {
+		return fmt.Errorf("thumbnailer not configured")
+	}
+	sc.generateThumbnails(lib, jp)
+	return nil
 }
 
 // allSubtreeDirs returns every (non-hidden) directory at or under root,
