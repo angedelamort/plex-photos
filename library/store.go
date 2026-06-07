@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -246,6 +247,45 @@ func (s *Store) ListChildNodes(parentID string) ([]*Node, error) {
 	return s.collectNodes(rows)
 }
 
+// SearchNodes returns nodes (albums / collections) whose name or sort title
+// matches the query, limited to the given set of accessible library ids. The
+// match is a case-insensitive substring. Results are capped by limit.
+func (s *Store) SearchNodes(libraryIDs []string, query string, limit int) ([]*Node, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || len(libraryIDs) == 0 {
+		return []*Node{}, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	placeholders := make([]string, len(libraryIDs))
+	args := make([]any, 0, len(libraryIDs)+3)
+	for i, id := range libraryIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	like := "%" + escapeLike(strings.ToLower(query)) + "%"
+	args = append(args, like, like, limit)
+	rows, err := s.db.Query(`SELECT `+nodeCols+`
+		FROM nodes
+		WHERE library_id IN (`+strings.Join(placeholders, ",")+`)
+		  AND (LOWER(name) LIKE ? ESCAPE '\' OR LOWER(sort_title) LIKE ? ESCAPE '\')
+		ORDER BY COALESCE(NULLIF(sort_title, ''), name)
+		LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.collectNodes(rows)
+}
+
+// escapeLike escapes the LIKE wildcards in a user-supplied search term so they
+// are matched literally (using '\' as the escape character).
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
 func (s *Store) collectNodes(rows *sql.Rows) ([]*Node, error) {
 	out := []*Node{}
 	for rows.Next() {
@@ -485,19 +525,37 @@ func (s *Store) RecentNodes(username string, limit int) ([]*HomeNode, error) {
 		LIMIT `+itoa(limit), username)
 }
 
-// RandomLibraryNodes returns up to limit random photo-bearing nodes from a
-// single library.
-func (s *Store) RandomLibraryNodes(libraryID string, limit int) ([]*HomeNode, error) {
+// RandomLibraryNodes returns up to limit photo-bearing nodes from a single
+// library, shuffled deterministically by seed. The same seed yields the same
+// selection, so callers can hold a selection stable across refreshes by reusing
+// a time-bucketed seed (see TimeBucketSeed).
+func (s *Store) RandomLibraryNodes(libraryID string, limit int, seed int64) ([]*HomeNode, error) {
 	if limit <= 0 {
 		limit = 12
 	}
+	// Deterministic shuffle: order rows by a seed-dependent hash of the rowid.
+	// modernc.org/sqlite has no RANDOM(seed) or hash function, so we use a
+	// multiplicative permutation modulo a large prime, which spreads rows
+	// pseudo-randomly while staying stable for a fixed seed.
+	const prime = 2147483647
+	mult := (seed%prime+prime)%prime*2654435761 + 1
 	return s.queryHomeNodes(`
 		`+homeNodeSelect+`
 		FROM nodes n
 		JOIN libraries l ON l.id = n.library_id
 		WHERE l.id = ? AND n.photo_count > 0
-		ORDER BY RANDOM()
-		LIMIT `+itoa(limit), libraryID)
+		ORDER BY ((n.rowid + 1) * ?) % `+itoa(prime)+`
+		LIMIT `+itoa(limit), libraryID, mult)
+}
+
+// TimeBucketSeed returns a seed that stays constant within each window-long
+// interval of wall-clock time and changes when the interval rolls over. A
+// window of 30 minutes keeps home page "random" picks stable for ~30 minutes.
+func TimeBucketSeed(window time.Duration) int64 {
+	if window <= 0 {
+		return time.Now().UnixNano()
+	}
+	return time.Now().UnixNano() / int64(window)
 }
 
 const homeNodeSelect = `SELECT n.id, n.library_id, COALESCE(n.parent_id, ''), n.name, n.fs_path, n.depth, n.photo_count, n.has_children,

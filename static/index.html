@@ -27,10 +27,18 @@
 <!-- APP -->
 <div id="app" hidden>
   <header class="topbar">
+    <button class="icon-btn sidebar-toggle" id="sidebar-toggle" type="button" data-i18n-title="nav.collapse" title="Collapse" aria-label="Collapse menu">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-menu"/></svg>
+    </button>
     <a class="logo" href="#" data-route="home">
       <svg class="icon" viewBox="0 0 24 24"><use href="#i-camera"/></svg>
       plex-photos
     </a>
+    <div class="topbar-search">
+      <svg class="icon topbar-search-icon" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+      <input type="search" id="search-input" class="topbar-search-input" data-i18n-placeholder="search.placeholder" placeholder="Search albums & collections" autocomplete="off" aria-label="Search">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
     <div class="topbar-right">
       <div class="user-menu" id="user-menu">
         <div class="avatar" id="avatar" title="" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false">--</div>
@@ -326,6 +334,8 @@
   <defs>
     <g id="i-camera"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 7h2l2 -2h6l2 2h2a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2M12 18a3 3 0 1 0 0 -6a3 3 0 0 0 0 6"/></g>
     <g id="i-home"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12l-2 0l9 -9l9 9l-2 0M5 12v7a1 1 0 0 0 1 1h3m10 -8v7a1 1 0 0 1 -1 1h-3m-6 0v-6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v6m-4 0h4"/></g>
+    <g id="i-menu"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></g>
+    <g id="i-search"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0M21 21l-6 -6"/></g>
     <g id="i-layout-grid"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 4h6v6h-6zM14 4h6v6h-6zM4 14h6v6h-6zM14 14h6v6h-6z"/></g>
     <g id="i-settings"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></g>
     <g id="i-users"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 7a3 3 0 1 0 0 6a3 3 0 0 0 0 -6M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2M16 3.13a4 4 0 0 1 0 7.75M21 21v-2a4 4 0 0 0 -3 -3.85"/></g>

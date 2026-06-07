@@ -554,6 +554,34 @@ func (h *Handler) ListTopNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nodes)
 }
 
+// Search finds albums and collections whose name matches the "q" query within
+// the libraries the current user can access. Returns a flat list of nodes.
+func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
+	s := auth.FromContext(r.Context())
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeJSON(w, http.StatusOK, []*Node{})
+		return
+	}
+	libs, err := h.store.ListLibrariesForUser(s.Username, s.IsAdmin)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ids := make([]string, 0, len(libs))
+	for _, lib := range libs {
+		ids = append(ids, lib.ID)
+	}
+	nodes, err := h.store.SearchNodes(ids, query, 50)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.fillNodeCovers(nodes)
+	h.markFavorites(s.Username, nodes)
+	writeJSON(w, http.StatusOK, nodes)
+}
+
 // markFavorites sets the Favorite flag on each node for the given user.
 func (h *Handler) markFavorites(username string, nodes []*Node) {
 	favs, err := h.store.FavoriteNodeIDs(username)

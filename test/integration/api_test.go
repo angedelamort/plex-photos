@@ -374,6 +374,52 @@ func TestScanDeepNesting(t *testing.T) {
 	}
 }
 
+func TestSearchNodes(t *testing.T) {
+	e := newTestEnv(t, true, "alice")
+	e.createAndScan("Famille", "famille", []string{"alice"})
+
+	// "montreal" is a top-level collection in the famille fixture.
+	hits := decode[[]nodeDTO](t, e.do(http.MethodGet, "/api/search?q=montr", nil))
+	if len(hits) == 0 {
+		t.Fatal("expected at least one search hit for 'montr'")
+	}
+	found := false
+	for _, h := range hits {
+		if h.Name == "montreal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'montreal' in search results, got %+v", hits)
+	}
+
+	// Empty query returns an empty list, not an error.
+	empty := decode[[]nodeDTO](t, e.do(http.MethodGet, "/api/search?q=", nil))
+	if len(empty) != 0 {
+		t.Fatalf("expected empty results for empty query, got %d", len(empty))
+	}
+
+	// A non-matching query yields no results.
+	none := decode[[]nodeDTO](t, e.do(http.MethodGet, "/api/search?q=zzzznope", nil))
+	if len(none) != 0 {
+		t.Fatalf("expected no results for non-matching query, got %d", len(none))
+	}
+}
+
+func TestSearchRespectsLibraryAccess(t *testing.T) {
+	// Library whitelisted to alice only; bob must not find its nodes.
+	admin := newTestEnv(t, true, "admin")
+	admin.createAndScan("Famille", "famille", []string{"alice"})
+
+	nodes, err := admin.store.SearchNodes([]string{}, "montreal", 50)
+	if err != nil {
+		t.Fatalf("search with no libraries: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("expected 0 results when no accessible libraries, got %d", len(nodes))
+	}
+}
+
 func TestThumbBlocksTraversal(t *testing.T) {
 	e := newTestEnv(t, true, "alice")
 	e.createAndScan("Famille", "famille", nil)

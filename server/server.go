@@ -133,6 +133,7 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/libraries", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.ListLibraries)))
 	mux.Handle("GET /api/libraries/{id}/nodes", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.ListTopNodes)))
 	mux.Handle("GET /api/nodes/{node}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.GetNode)))
+	mux.Handle("GET /api/search", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.Search)))
 
 	// --- Home swimlanes ---
 	mux.Handle("GET /api/favorites", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.ListFavorites)))
@@ -154,7 +155,7 @@ func NewMux(d Deps) *http.ServeMux {
 	if staticDir == "" {
 		staticDir = "static"
 	}
-	fileServer := http.FileServer(http.Dir(staticDir))
+	fileServer := setNoCache(http.FileServer(http.Dir(staticDir)))
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		// While unconfigured, send the operator to the first-run setup wizard.
 		if d.Setup != nil && !d.Setup.state.Configured() && r.URL.Path == "/" {
@@ -162,6 +163,7 @@ func NewMux(d Deps) *http.ServeMux {
 			return
 		}
 		if r.URL.Path == "/" {
+			noCacheHeaders(w)
 			http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 			return
 		}
@@ -170,6 +172,7 @@ func NewMux(d Deps) *http.ServeMux {
 			return
 		}
 		if _, err := os.Stat(filepath.Join(staticDir, filepath.Clean(r.URL.Path))); err != nil {
+			noCacheHeaders(w)
 			http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 			return
 		}
@@ -177,6 +180,23 @@ func NewMux(d Deps) *http.ServeMux {
 	})
 
 	return mux
+}
+
+// noCacheHeaders tells the browser to revalidate before reusing a cached
+// response. Combined with the FileServer's ETag/Last-Modified support, repeat
+// requests still return cheap 304s, but the client can never serve a stale
+// app.js/i18n.js after a redeploy (which previously left raw i18n keys on
+// screen until a hard refresh).
+func noCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-cache")
+}
+
+// setNoCache wraps a handler, applying no-cache headers to every response.
+func setNoCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noCacheHeaders(w)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // LogRequests is a simple request-logging middleware.

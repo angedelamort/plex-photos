@@ -3,6 +3,7 @@ package library
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"plex-photos/auth"
 )
@@ -11,6 +12,9 @@ import (
 const (
 	recentLimit = 20
 	randomLimit = 12
+	// randomWindow is how long the home page "random" selection stays stable
+	// before it rotates to a fresh set of albums.
+	randomWindow = 30 * time.Minute
 )
 
 // fillHomeNodeCovers backfills missing covers from the first photo on disk and
@@ -116,7 +120,7 @@ func (h *Handler) ListRandomAlbums(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "no access")
 		return
 	}
-	nodes, err := h.store.RandomLibraryNodes(libID, randomLimit)
+	nodes, err := h.store.RandomLibraryNodes(libID, randomLimit, TimeBucketSeed(randomWindow))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

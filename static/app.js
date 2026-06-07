@@ -562,7 +562,12 @@ async function startLibrarySlideshow(libraryId, name) {
 // toggle is shown for nodes that hold photos (album view).
 // opts: { poster: bool (use 3:2 poster layout), parent: string (parent label) }
 function nodeCard(libraryId, n, opts = {}) {
-  const art = n.backgroundPhoto || n.coverPhoto;
+  // Poster cards are 3:4 (portrait) and should prefer the cover (poster) image;
+  // landscape cards are 16:9 and should prefer the background image. Fall back
+  // to whichever art is available.
+  const art = opts.poster
+    ? (n.coverPhoto || n.backgroundPhoto)
+    : (n.backgroundPhoto || n.coverPhoto);
   const thumb = art ? `<img src="${thumbURL(art)}" alt="" loading="lazy">` : icon(n.hasChildren ? "folder" : "photo");
   const isAlbum = (n.photoCount || 0) > 0;
   const isFav = state.favorites.has(n.id);
@@ -1007,6 +1012,9 @@ function toggleViewerMenu() {
 }
 
 function openViewerMenu() {
+  // Rebuild labels at open time so translations apply regardless of i18n load order.
+  $("#viewer-set-poster").innerHTML = `${icon("star")} <span>${esc(t("viewer.setPoster"))}</span>`;
+  $("#viewer-set-background").innerHTML = `${icon("image")} <span>${esc(t("viewer.setBackground"))}</span>`;
   $("#viewer-menu").hidden = false;
   $("#viewer-menu-btn").setAttribute("aria-expanded", "true");
 }
@@ -1036,8 +1044,8 @@ async function setCurrentArt(kind) {
     });
     if (kind === "background") state.currentAlbum.backgroundPhoto = p.path;
     else state.currentAlbum.coverPhoto = p.path;
-    item.innerHTML = `${icon(iconName)} ${esc(doneLabel)}`;
-    setTimeout(() => { item.innerHTML = `${icon(iconName)} ${esc(setLabel)}`; }, 1500);
+    item.innerHTML = `${icon(iconName)} <span>${esc(doneLabel)}</span>`;
+    setTimeout(() => { item.innerHTML = `${icon(iconName)} <span>${esc(setLabel)}</span>`; }, 1500);
   } catch (e) {
     alert(t("alert.error", { msg: e.message }));
   }
@@ -2068,6 +2076,128 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowLeft") { stopSlideshow(); viewerStep(-1); }
   else if (e.key === "ArrowRight") { stopSlideshow(); viewerStep(1); }
 });
+
+// ── sidebar collapse (Plex-style burger toggle) ──
+(function setupSidebarToggle() {
+  const KEY = "sidebar-collapsed";
+  const btn = $("#sidebar-toggle");
+  if (!btn) return;
+
+  function apply(collapsed) {
+    document.body.classList.toggle("app-collapsed", collapsed);
+    btn.setAttribute("aria-pressed", String(collapsed));
+    const label = collapsed ? t("nav.expand") : t("nav.collapse");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+  }
+
+  apply(localStorage.getItem(KEY) === "1");
+
+  btn.addEventListener("click", () => {
+    const collapsed = !document.body.classList.contains("app-collapsed");
+    localStorage.setItem(KEY, collapsed ? "1" : "0");
+    apply(collapsed);
+  });
+})();
+
+// ── global search (albums & collections) ──
+(function setupSearch() {
+  const input = $("#search-input");
+  const panel = $("#search-results");
+  if (!input || !panel) return;
+
+  let timer = null;
+  let lastQuery = "";
+  let activeIdx = -1;
+  let results = [];
+
+  function close() {
+    panel.hidden = true;
+    activeIdx = -1;
+  }
+
+  function go(node) {
+    close();
+    input.blur();
+    navigate({ view: "node", libraryId: node.libraryId, nodeId: node.id });
+  }
+
+  function render() {
+    panel.innerHTML = "";
+    if (results.length === 0) {
+      panel.appendChild(el("div", { class: "search-empty", text: t("search.noResults") }));
+      panel.hidden = false;
+      return;
+    }
+    results.forEach((node, i) => {
+      const cover = node.coverPhoto
+        ? el("img", { class: "search-result-thumb", src: thumbURL(node.coverPhoto), alt: "", loading: "lazy" })
+        : el("div", { class: "search-result-thumb placeholder", html: icon("layout-grid") });
+      const sub = node.childCount > 0
+        ? t("search.collection", { n: node.childCount })
+        : t("search.album", { n: node.photoCount || 0 });
+      const item = el("div", {
+        class: "search-result-item" + (i === activeIdx ? " active" : ""),
+        "data-idx": i,
+        onclick: () => go(node),
+      }, [
+        cover,
+        el("div", { class: "search-result-meta" }, [
+          el("div", { class: "search-result-name", text: node.name }),
+          el("div", { class: "search-result-sub", text: sub }),
+        ]),
+      ]);
+      panel.appendChild(item);
+    });
+    panel.hidden = false;
+  }
+
+  async function run(q) {
+    try {
+      results = await api("/api/search?q=" + encodeURIComponent(q));
+    } catch (_) {
+      results = [];
+    }
+    activeIdx = -1;
+    if (input.value.trim() === q) render();
+  }
+
+  input.addEventListener("input", () => {
+    const q = input.value.trim();
+    clearTimeout(timer);
+    if (q === "") { lastQuery = ""; close(); return; }
+    if (q === lastQuery) return;
+    lastQuery = q;
+    panel.innerHTML = `<div class="search-loading">${esc(t("common.loading"))}</div>`;
+    panel.hidden = false;
+    timer = setTimeout(() => run(q), 250);
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { close(); input.blur(); return; }
+    if (panel.hidden || results.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      activeIdx = (activeIdx + 1) % results.length;
+      render();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      activeIdx = (activeIdx - 1 + results.length) % results.length;
+      render();
+    } else if (e.key === "Enter") {
+      if (activeIdx >= 0 && results[activeIdx]) go(results[activeIdx]);
+      else if (results[0]) go(results[0]);
+    }
+  });
+
+  input.addEventListener("focus", () => {
+    if (results.length > 0 && input.value.trim() !== "") render();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".topbar-search")) close();
+  });
+})();
 
 applyStaticTranslations();
 boot();
