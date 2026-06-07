@@ -1600,11 +1600,13 @@ function hideScanBanner() {
 
 function updateScanBanner(p) {
   const bar = ensureScanBanner();
+  const title = bar.querySelector(".scan-banner-title");
   const sub = bar.querySelector(".scan-banner-sub");
   const fill = bar.querySelector(".scan-banner-fill");
 
   if (p.phase === "thumbnails") {
     // Phase 2: pre-generating thumbnails for the whole library.
+    title.textContent = t("scan.thumbnails");
     sub.textContent = t("scan.thumbs", { cur: p.thumbDone || 0, total: p.thumbTotal || 0 });
     const pct = p.thumbTotal ? Math.round((p.thumbDone / p.thumbTotal) * 100) : 100;
     fill.style.width = pct + "%";
@@ -1612,6 +1614,7 @@ function updateScanBanner(p) {
   }
 
   // Phase 1: indexing the directory tree.
+  title.textContent = t("scan.scanning");
   if (p.currentDir) {
     sub.textContent = p.total
       ? t("scan.progress", { cur: p.current, total: p.total, dir: p.currentDir })
