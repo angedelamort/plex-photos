@@ -28,7 +28,7 @@ See `BROWSER_TEST_PLAN.md`. Quick start:
 
 ```
 AUTH_PROVIDER=mock MOCK_USER=dev MOCK_ADMIN=true \
-PHOTOS_PATH=./testdata/photos DATA_PATH=./testdata/data PORT=8099 \
+DATA_PATH=./testdata/data PORT=8099 \
 go run .
 ```
 

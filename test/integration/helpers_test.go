@@ -52,9 +52,9 @@ func newTestEnv(t *testing.T, admin bool, mockUser string) *testEnv {
 	t.Cleanup(func() { db.Close() })
 
 	store := library.NewStore(db)
-	scanner := library.NewScanner(db, store, photosRoot)
-	thumbs := library.NewThumbnailer(photosRoot, thumbCache, 200)
-	gallery := library.NewHandler(store, scanner, thumbs, photosRoot, artDir)
+	scanner := library.NewScanner(db, store)
+	thumbs := library.NewThumbnailer(thumbCache, 200)
+	gallery := library.NewHandler(store, scanner, thumbs, artDir)
 
 	sessions := auth.NewSessionManager("integration-test-secret-integration-test", false)
 	mw := auth.NewMiddleware(sessions)

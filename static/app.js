@@ -343,42 +343,46 @@ async function renderHome(main) {
   }
 
   // ── Swimlanes ──
+  // Fire every request up front so the page assembles with one round of
+  // concurrent fetches instead of 2 + 2N sequential round trips. Each promise
+  // is caught individually so one failing library does not break the page.
+  const favsP = api("/api/favorites").catch(() => []);
+  const recentP = api("/api/recent").catch(() => []);
+  const randomPs = state.libraries.map((lib) => api(`/api/libraries/${lib.id}/random-albums`).catch(() => []));
+  const nodesPs = state.libraries.map((lib) => api(`/api/libraries/${lib.id}/nodes`).catch(() => []));
+
   // Favoris
-  try {
-    const favs = await api("/api/favorites");
-    state.favorites = new Set(favs.map((a) => a.id));
-    if (favs.length > 0) {
-      main.appendChild(swimlane(t("home.favorites"), favs.map((a) => nodeCard(a.libraryId, a, { parent: a.libraryName, poster: true }))));
-    }
-  } catch (_) {}
+  const favs = await favsP;
+  state.favorites = new Set(favs.map((a) => a.id));
+  if (favs.length > 0) {
+    main.appendChild(swimlane(t("home.favorites"), favs.map((a) => nodeCard(a.libraryId, a, { parent: a.libraryName, poster: true }))));
+  }
 
   // Récemment consultés
-  try {
-    const recent = await api("/api/recent");
-    if (recent.length > 0) {
-      main.appendChild(swimlane(t("home.recent"), recent.map((a) => nodeCard(a.libraryId, a, { parent: a.libraryName, poster: true }))));
-    }
-  } catch (_) {}
+  const recent = await recentP;
+  if (recent.length > 0) {
+    main.appendChild(swimlane(t("home.recent"), recent.map((a) => nodeCard(a.libraryId, a, { parent: a.libraryName, poster: true }))));
+  }
 
   // Suggestions aléatoires — one lane per library
-  for (const lib of state.libraries) {
-    try {
-      const rnd = await api(`/api/libraries/${lib.id}/random-albums`);
-      if (rnd.length > 0) {
-        main.appendChild(swimlane(t("home.random", { name: lib.name }), rnd.map((a) => nodeCard(a.libraryId, a, { parent: a.libraryName, poster: true }))));
-      }
-    } catch (_) {}
+  for (let i = 0; i < state.libraries.length; i++) {
+    const lib = state.libraries[i];
+    const rnd = await randomPs[i];
+    if (rnd.length > 0) {
+      main.appendChild(swimlane(t("home.random", { name: lib.name }), rnd.map((a) => nodeCard(a.libraryId, a, { parent: a.libraryName, poster: true }))));
+    }
   }
 
   // ── Top-level nodes grouped by library ──
-  for (const lib of state.libraries) {
+  for (let i = 0; i < state.libraries.length; i++) {
+    const lib = state.libraries[i];
     const block = el("div", { class: "lib-block" });
     block.appendChild(el("div", {
       class: "section-header",
       html: `<div><div class="section-title">${esc(lib.name)}</div><div class="section-sub">${esc(t("home.collectionCount", { n: lib.collectionCount }))}</div></div>`,
     }));
     const grid = el("div", { class: "grid grid--landscape" });
-    const nodes = await api(`/api/libraries/${lib.id}/nodes`);
+    const nodes = await nodesPs[i];
     nodes.forEach((n) => grid.appendChild(nodeCard(lib.id, n)));
     if (nodes.length === 0) grid.appendChild(el("div", { class: "empty", text: t("home.emptyScan") }));
     block.appendChild(grid);
@@ -1409,7 +1413,7 @@ function renderSettings(main) {
   main.innerHTML = "";
   const header = el("div", { class: "section-header" });
   const ver = (state.user && state.user.version) || "dev";
-  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("settings.title"))}</div><div class="section-sub">${esc(t("settings.subtitle"))} · v${esc(ver)}</div>` }));
+  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("settings.title"))}</div><div class="section-sub">${esc(t("settings.subtitle"))} · ${esc(ver)}</div>` }));
   main.appendChild(header);
 
   const group = el("div", { class: "settings-group" });
@@ -1598,10 +1602,22 @@ function updateScanBanner(p) {
   const bar = ensureScanBanner();
   const sub = bar.querySelector(".scan-banner-sub");
   const fill = bar.querySelector(".scan-banner-fill");
+
+  if (p.phase === "thumbnails") {
+    // Phase 2: pre-generating thumbnails for the whole library.
+    sub.textContent = t("scan.thumbs", { cur: p.thumbDone || 0, total: p.thumbTotal || 0 });
+    const pct = p.thumbTotal ? Math.round((p.thumbDone / p.thumbTotal) * 100) : 100;
+    fill.style.width = pct + "%";
+    return;
+  }
+
+  // Phase 1: indexing the directory tree.
   if (p.currentDir) {
     sub.textContent = p.total
       ? t("scan.progress", { cur: p.current, total: p.total, dir: p.currentDir })
       : p.currentDir;
+  } else {
+    sub.textContent = t("scan.indexing");
   }
   const pct = p.total ? Math.round((p.current / p.total) * 100) : 0;
   fill.style.width = pct + "%";

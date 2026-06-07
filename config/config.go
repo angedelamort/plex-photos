@@ -13,7 +13,6 @@ type Config struct {
 	PlexServerURL string
 	PlexMachineID string
 	PublicBaseURL string
-	PhotosPath    string
 	DataPath      string
 	SessionSecret string
 	Port          string
@@ -42,7 +41,6 @@ func Load() (*Config, error) {
 		PlexServerURL: os.Getenv("PLEX_SERVER_URL"),
 		PlexMachineID: os.Getenv("PLEX_MACHINE_ID"),
 		PublicBaseURL: os.Getenv("PUBLIC_BASE_URL"),
-		PhotosPath:    getEnv("PHOTOS_PATH", "/photos"),
 		DataPath:      getEnv("DATA_PATH", "/config"),
 		SessionSecret: os.Getenv("SESSION_SECRET"),
 		Port:          getEnv("PORT", "8099"),
@@ -64,21 +62,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid AUTH_PROVIDER %q (expected \"plex\" or \"mock\")", c.AuthProvider)
 	}
 
-	if c.PhotosPath == "" {
-		return nil, fmt.Errorf("PHOTOS_PATH is required")
-	}
 	if c.DataPath == "" {
 		return nil, fmt.Errorf("DATA_PATH is required")
 	}
 
-	// Normalize to absolute paths. Library roots are stored absolute (resolved
-	// via filepath.Abs), so the photos root must be absolute too; otherwise
-	// computing photo paths relative to it (filepath.Rel) fails and covers /
-	// photo listings come back empty. Doing this once here keeps every path
-	// comparison absolute-vs-absolute.
-	if abs, err := filepath.Abs(c.PhotosPath); err == nil {
-		c.PhotosPath = abs
-	}
+	// Normalize the data path to absolute. Library roots are picked (and stored)
+	// as absolute paths via the admin directory browser, so there is no global
+	// photos root to normalize here.
 	if abs, err := filepath.Abs(c.DataPath); err == nil {
 		c.DataPath = abs
 	}

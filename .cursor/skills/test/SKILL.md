@@ -42,7 +42,7 @@ go run testdata/gen/gen.go
 Start it in the background so it does not block. PowerShell:
 
 ```
-$env:AUTH_PROVIDER="mock"; $env:MOCK_USER="dev"; $env:MOCK_ADMIN="true"; $env:PHOTOS_PATH="./testdata/photos"; $env:DATA_PATH="./testdata/data"; $env:PORT="8099"; go run .
+$env:AUTH_PROVIDER="mock"; $env:MOCK_USER="dev"; $env:MOCK_ADMIN="true"; $env:DATA_PATH="./testdata/data"; $env:PORT="8099"; go run .
 ```
 
 Wait until the log shows `listening on :8099`. Note the process PID for Step 5.

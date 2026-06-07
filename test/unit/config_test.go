@@ -11,7 +11,7 @@ import (
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"PLEX_SERVER_URL", "PLEX_MACHINE_ID", "PUBLIC_BASE_URL", "PHOTOS_PATH", "DATA_PATH",
+		"PLEX_SERVER_URL", "PLEX_MACHINE_ID", "PUBLIC_BASE_URL", "DATA_PATH",
 		"SESSION_SECRET", "PORT", "THUMB_WIDTH", "TZ", "LOG_LEVEL",
 		"AUTH_PROVIDER", "MOCK_USER", "MOCK_ADMIN",
 	} {
@@ -22,7 +22,6 @@ func clearEnv(t *testing.T) {
 func TestConfigMockDefaults(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_PROVIDER", "mock")
-	t.Setenv("PHOTOS_PATH", "/photos")
 	t.Setenv("DATA_PATH", "/data")
 
 	cfg, err := config.Load()
@@ -40,21 +39,17 @@ func TestConfigMockDefaults(t *testing.T) {
 	}
 }
 
-// TestConfigNormalizesRelativePaths ensures PHOTOS_PATH/DATA_PATH are made
-// absolute, since library roots are stored absolute and path math relies on
-// both sides being absolute (otherwise covers/photo listings come back empty).
+// TestConfigNormalizesRelativePaths ensures DATA_PATH is made absolute. Library
+// roots are picked as absolute paths via the admin browser, so there is no
+// global photos root to normalize.
 func TestConfigNormalizesRelativePaths(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_PROVIDER", "mock")
-	t.Setenv("PHOTOS_PATH", "./testdata/photos")
 	t.Setenv("DATA_PATH", "./testdata/data")
 
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
-	}
-	if !filepath.IsAbs(cfg.PhotosPath) {
-		t.Errorf("PhotosPath = %q, want absolute", cfg.PhotosPath)
 	}
 	if !filepath.IsAbs(cfg.DataPath) {
 		t.Errorf("DataPath = %q, want absolute", cfg.DataPath)
@@ -66,7 +61,6 @@ func TestConfigNormalizesRelativePaths(t *testing.T) {
 func TestConfigPlexLoadsWithoutPlexVars(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_PROVIDER", "plex")
-	t.Setenv("PHOTOS_PATH", "/photos")
 	t.Setenv("DATA_PATH", "/data")
 
 	cfg, err := config.Load()
@@ -83,7 +77,6 @@ func TestConfigPlexLoadsWithoutPlexVars(t *testing.T) {
 func TestConfigPlexReadsEnvVars(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_PROVIDER", "plex")
-	t.Setenv("PHOTOS_PATH", "/photos")
 	t.Setenv("DATA_PATH", "/data")
 	t.Setenv("PLEX_SERVER_URL", "http://plex:32400")
 	t.Setenv("PLEX_MACHINE_ID", "abc123")
@@ -104,7 +97,6 @@ func TestConfigPlexReadsEnvVars(t *testing.T) {
 func TestConfigRejectsBadProvider(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_PROVIDER", "carrier-pigeon")
-	t.Setenv("PHOTOS_PATH", "/photos")
 	t.Setenv("DATA_PATH", "/data")
 	if _, err := config.Load(); err == nil {
 		t.Fatal("expected invalid AUTH_PROVIDER to fail")
@@ -116,7 +108,6 @@ func TestConfigRejectsBadProvider(t *testing.T) {
 func TestConfigPlexLoadsWithoutSessionSecret(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_PROVIDER", "plex")
-	t.Setenv("PHOTOS_PATH", "/photos")
 	t.Setenv("DATA_PATH", "/data")
 	t.Setenv("PLEX_SERVER_URL", "http://plex:32400")
 	t.Setenv("PLEX_MACHINE_ID", "abc123")

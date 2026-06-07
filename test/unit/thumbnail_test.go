@@ -42,9 +42,12 @@ func TestThumbRegeneratesWhenSourceNewer(t *testing.T) {
 	src := filepath.Join(photosRoot, "album", "pic.jpg")
 	writeTestJPEG(t, src, color.RGBA{0x20, 0x40, 0x80, 0xff})
 
-	th := library.NewThumbnailer(photosRoot, cacheRoot, 100)
+	th := library.NewThumbnailer(cacheRoot, 100)
 
-	dst, err := th.ThumbPath("album/pic.jpg")
+	// The thumbnailer now takes a URL token derived from the absolute source path.
+	token := library.AbsToURLPath(src)
+
+	dst, err := th.ThumbPath(token)
 	if err != nil {
 		t.Fatalf("first ThumbPath: %v", err)
 	}
@@ -54,7 +57,7 @@ func TestThumbRegeneratesWhenSourceNewer(t *testing.T) {
 	}
 
 	// Unchanged source -> same cached thumb (mtime unchanged).
-	if _, err := th.ThumbPath("album/pic.jpg"); err != nil {
+	if _, err := th.ThumbPath(token); err != nil {
 		t.Fatalf("second ThumbPath: %v", err)
 	}
 	fi2, _ := os.Stat(dst)
@@ -69,7 +72,7 @@ func TestThumbRegeneratesWhenSourceNewer(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	if _, err := th.ThumbPath("album/pic.jpg"); err != nil {
+	if _, err := th.ThumbPath(token); err != nil {
 		t.Fatalf("third ThumbPath: %v", err)
 	}
 	fi3, _ := os.Stat(dst)

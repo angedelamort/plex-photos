@@ -24,6 +24,7 @@ func (h *Handler) fillHomeNodeCovers(username string, nodes []*HomeNode) {
 				cover = h.scanner.firstPhotoDeep(a.FSPath)
 			}
 			a.CoverPhoto = cover
+			_ = h.store.CacheNodeCover(a.ID, cover)
 		}
 		a.Favorite = favs[a.ID]
 	}

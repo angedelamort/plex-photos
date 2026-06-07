@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/disintegration/imaging"
@@ -11,23 +12,30 @@ import (
 
 // Thumbnailer generates and caches thumbnails on demand.
 type Thumbnailer struct {
-	photosRoot string
-	cacheRoot  string
-	width      int
+	cacheRoot string
+	width     int
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
 }
 
-// NewThumbnailer creates a thumbnailer. photosRoot is the read-only photos mount,
-// cacheRoot is where generated thumbs are stored (mirrors the photos tree).
-func NewThumbnailer(photosRoot, cacheRoot string, width int) *Thumbnailer {
+// NewThumbnailer creates a thumbnailer. cacheRoot is where generated thumbs are
+// stored (mirroring the source tree). Source paths are absolute (already
+// authorized by the caller against an accessible library root).
+func NewThumbnailer(cacheRoot string, width int) *Thumbnailer {
 	return &Thumbnailer{
-		photosRoot: photosRoot,
-		cacheRoot:  cacheRoot,
-		width:      width,
-		locks:      map[string]*sync.Mutex{},
+		cacheRoot: cacheRoot,
+		width:     width,
+		locks:     map[string]*sync.Mutex{},
 	}
+}
+
+// cachePath maps an absolute source image path to its cached thumbnail path,
+// mirroring the source tree under cacheRoot. The drive-letter colon (Windows)
+// is replaced so the key is a valid single path segment on every OS.
+func (t *Thumbnailer) cachePath(srcFull string) string {
+	key := strings.ReplaceAll(AbsToURLPath(srcFull), ":", "_")
+	return filepath.Join(t.cacheRoot, filepath.FromSlash(key)+".thumb.jpg")
 }
 
 // pathLock serializes generation per output path to avoid duplicate work/races.
@@ -42,27 +50,20 @@ func (t *Thumbnailer) pathLock(key string) *sync.Mutex {
 	return l
 }
 
-// ThumbPath returns the cached thumbnail path for a photo path (relative to the
-// photos root), generating it lazily if missing. The relative path is validated
-// to stay confined under the photos root.
-func (t *Thumbnailer) ThumbPath(relPath string) (string, error) {
-	srcFull, err := ResolveUnderRoot(t.photosRoot, relPath)
-	if err != nil {
-		return "", err
-	}
+// ThumbPath returns the cached thumbnail path for a photo URL token, generating
+// it lazily if missing. The caller is responsible for having authorized the
+// path against an accessible library root before calling this.
+func (t *Thumbnailer) ThumbPath(token string) (string, error) {
+	srcFull := URLPathToAbs(token)
 	if !IsImage(srcFull) {
-		return "", fmt.Errorf("not an image: %s", relPath)
+		return "", fmt.Errorf("not an image: %s", token)
 	}
 	srcInfo, err := os.Stat(srcFull)
 	if err != nil {
 		return "", err
 	}
 
-	rel, err := RelToRoot(t.photosRoot, srcFull)
-	if err != nil {
-		return "", err
-	}
-	dstFull := filepath.Join(t.cacheRoot, rel+".thumb.jpg")
+	dstFull := t.cachePath(srcFull)
 
 	if thumbFresh(dstFull, srcInfo) {
 		return dstFull, nil
@@ -81,6 +82,34 @@ func (t *Thumbnailer) ThumbPath(relPath string) (string, error) {
 		return "", err
 	}
 	return dstFull, nil
+}
+
+// Ensure generates (if missing/stale) the thumbnail for the given photo URL
+// token. It returns true if a new thumbnail was written, false if a fresh one
+// already existed. Used to pre-warm thumbs during scan.
+func (t *Thumbnailer) Ensure(token string) (bool, error) {
+	srcFull := URLPathToAbs(token)
+	if !IsImage(srcFull) {
+		return false, fmt.Errorf("not an image: %s", token)
+	}
+	srcInfo, err := os.Stat(srcFull)
+	if err != nil {
+		return false, err
+	}
+	dstFull := t.cachePath(srcFull)
+	if thumbFresh(dstFull, srcInfo) {
+		return false, nil
+	}
+	lock := t.pathLock(dstFull)
+	lock.Lock()
+	defer lock.Unlock()
+	if thumbFresh(dstFull, srcInfo) {
+		return false, nil
+	}
+	if err := t.generate(srcFull, dstFull); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // thumbFresh reports whether the cached thumbnail at dst exists, is non-empty,

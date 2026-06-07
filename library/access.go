@@ -27,9 +27,10 @@ func (s *Store) CanAccessNode(nodeID, username string, isAdmin bool) (bool, erro
 	return s.CanAccessLibrary(n.LibraryID, username, isAdmin)
 }
 
-// CanAccessPhotoPath checks whether a user may access a photo at the given path
-// (relative to the photos root) by verifying it falls under an accessible library root.
-func (s *Store) CanAccessPhotoPath(photosRoot, fullPath, username string, isAdmin bool) (bool, error) {
+// CanAccessPhotoPath checks whether a user may access a photo at the given
+// absolute path by verifying it falls under an accessible library root. This is
+// the sole confinement guard for photo/thumb/exif requests.
+func (s *Store) CanAccessPhotoPath(fullPath, username string, isAdmin bool) (bool, error) {
 	libs, err := s.ListLibrariesForUser(username, isAdmin)
 	if err != nil {
 		return false, err

@@ -17,22 +17,26 @@ import (
 
 // Handler exposes all gallery/admin HTTP endpoints.
 type Handler struct {
-	store      *Store
-	scanner    *Scanner
-	autoScan   *AutoScanner
-	thumbs     *Thumbnailer
-	photosRoot string
-	artDir     string
-	version    string
+	store    *Store
+	scanner  *Scanner
+	autoScan *AutoScanner
+	thumbs   *Thumbnailer
+	artDir   string
+	version  string
 }
+
+// defaultBrowseRoot is the conventional photos mount used as the starting point
+// for the admin directory browser. It is only a convenience default; libraries
+// may be rooted at any accessible absolute directory.
+const defaultBrowseRoot = "/photos"
 
 // SetVersion records the build version surfaced to clients (e.g. in /api/me).
 func (h *Handler) SetVersion(v string) { h.version = v }
 
 // NewHandler builds the gallery handler. artDir is the internal folder (under the
 // data mount) where uploaded custom art is stored, kept out of the photos library.
-func NewHandler(store *Store, scanner *Scanner, thumbs *Thumbnailer, photosRoot, artDir string) *Handler {
-	return &Handler{store: store, scanner: scanner, thumbs: thumbs, photosRoot: photosRoot, artDir: artDir}
+func NewHandler(store *Store, scanner *Scanner, thumbs *Thumbnailer, artDir string) *Handler {
+	return &Handler{store: store, scanner: scanner, thumbs: thumbs, artDir: artDir}
 }
 
 // SetAutoScanner wires the auto-scanner so admin settings endpoints can read
@@ -156,9 +160,9 @@ func (h *Handler) AdminListLibraries(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AdminBrowseDirs(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimSpace(r.URL.Query().Get("path"))
 	if p == "" {
-		// Default to the photos root; if it doesn't exist (e.g. local dev where
-		// the volume isn't mounted), fall back to the working directory.
-		p = h.photosRoot
+		// No global photos root: default to the conventional /photos mount, and
+		// fall back to the working directory if it isn't present (e.g. local dev).
+		p = defaultBrowseRoot
 		if info, err := os.Stat(p); err != nil || !info.IsDir() {
 			if wd, werr := os.Getwd(); werr == nil {
 				p = wd
@@ -187,7 +191,7 @@ func (h *Handler) AdminBrowseDirs(w http.ResponseWriter, r *http.Request) {
 	parent := filepath.Dir(full)
 	hasParent := parent != full // false only at the filesystem root
 	writeJSON(w, http.StatusOK, map[string]any{
-		"root":      filepath.ToSlash(h.photosRoot),
+		"root":      filepath.ToSlash(defaultBrowseRoot),
 		"path":      filepath.ToSlash(full),
 		"parent":    filepath.ToSlash(parent),
 		"hasParent": hasParent,
@@ -195,14 +199,15 @@ func (h *Handler) AdminBrowseDirs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// resolveRoot validates an admin-supplied library root. It accepts any absolute
-// directory; relative paths are resolved against the photos root.
+// resolveRoot validates an admin-supplied library root. There is no global
+// photos mount: the library root the admin picks (via the directory browser) is
+// itself the anchor for everything under it. The input must resolve to an
+// existing absolute directory.
 func (h *Handler) resolveRoot(input string) (string, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return "", ErrUnsafePath
 	}
-	// Relative paths resolve against the process working directory.
 	full, err := filepath.Abs(input)
 	if err != nil {
 		return "", ErrUnsafePath
@@ -517,7 +522,12 @@ func (h *Handler) GetNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if rel, err := filepath.Rel(h.photosRoot, node.FSPath); err == nil {
+	// FolderPath is displayed relative to the owning library root.
+	libRoot := ""
+	if lib, err := h.store.GetLibrary(node.LibraryID); err == nil {
+		libRoot = lib.RootPath
+	}
+	if rel, err := filepath.Rel(libRoot, node.FSPath); err == nil {
 		node.FolderPath = filepath.ToSlash(rel)
 	}
 
@@ -543,7 +553,7 @@ func (h *Handler) GetNode(w http.ResponseWriter, r *http.Request) {
 
 	ancestors, _ := h.store.Ancestors(nodeID)
 	for _, a := range ancestors {
-		if rel, err := filepath.Rel(h.photosRoot, a.FSPath); err == nil {
+		if rel, err := filepath.Rel(libRoot, a.FSPath); err == nil {
 			a.FolderPath = filepath.ToSlash(rel)
 		}
 	}
@@ -567,12 +577,8 @@ func (h *Handler) Thumb(w http.ResponseWriter, r *http.Request) {
 	s := auth.FromContext(r.Context())
 	rel := r.PathValue("path")
 
-	full, err := ResolveUnderRoot(h.photosRoot, rel)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid path")
-		return
-	}
-	if ok, _ := h.store.CanAccessPhotoPath(h.photosRoot, full, s.Username, s.IsAdmin); !ok {
+	full := URLPathToAbs(rel)
+	if ok, _ := h.store.CanAccessPhotoPath(full, s.Username, s.IsAdmin); !ok {
 		writeErr(w, http.StatusForbidden, "no access")
 		return
 	}
@@ -591,16 +597,12 @@ func (h *Handler) Photo(w http.ResponseWriter, r *http.Request) {
 	s := auth.FromContext(r.Context())
 	rel := r.PathValue("path")
 
-	full, err := ResolveUnderRoot(h.photosRoot, rel)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid path")
-		return
-	}
+	full := URLPathToAbs(rel)
 	if !IsImage(full) {
 		writeErr(w, http.StatusBadRequest, "not an image")
 		return
 	}
-	if ok, _ := h.store.CanAccessPhotoPath(h.photosRoot, full, s.Username, s.IsAdmin); !ok {
+	if ok, _ := h.store.CanAccessPhotoPath(full, s.Username, s.IsAdmin); !ok {
 		writeErr(w, http.StatusForbidden, "no access")
 		return
 	}
@@ -636,16 +638,12 @@ func (h *Handler) Exif(w http.ResponseWriter, r *http.Request) {
 	s := auth.FromContext(r.Context())
 	rel := r.PathValue("path")
 
-	full, err := ResolveUnderRoot(h.photosRoot, rel)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid path")
-		return
-	}
+	full := URLPathToAbs(rel)
 	if !IsImage(full) {
 		writeErr(w, http.StatusBadRequest, "not an image")
 		return
 	}
-	if ok, _ := h.store.CanAccessPhotoPath(h.photosRoot, full, s.Username, s.IsAdmin); !ok {
+	if ok, _ := h.store.CanAccessPhotoPath(full, s.Username, s.IsAdmin); !ok {
 		writeErr(w, http.StatusForbidden, "no access")
 		return
 	}
@@ -713,8 +711,8 @@ func (h *Handler) SetCover(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	// Validate the photo path stays under the photos root.
-	if _, err := ResolveUnderRoot(h.photosRoot, in.Photo); err != nil {
+	// Validate the photo path belongs to a library the user can access.
+	if ok, _ := h.store.CanAccessPhotoPath(URLPathToAbs(in.Photo), s.Username, s.IsAdmin); !ok {
 		writeErr(w, http.StatusBadRequest, "invalid photo path")
 		return
 	}
@@ -908,6 +906,7 @@ func (h *Handler) fillNodeCovers(nodes []*Node) {
 				cover = h.scanner.firstPhotoDeep(n.FSPath)
 			}
 			n.CoverPhoto = cover
+			_ = h.store.CacheNodeCover(n.ID, cover)
 		}
 	}
 }

@@ -338,6 +338,19 @@ func (s *Store) SetNodeCover(id, coverPhoto, setBy string) error {
 	return nil
 }
 
+// CacheNodeCover persists a system-discovered cover only when the node has no
+// cover yet, so request-time backfill of an empty cover is stored once and
+// subsequent reads skip the filesystem walk. It never overwrites a user-set or
+// scan-set cover (cover_set_by stays NULL so a later scan can still refresh it).
+func (s *Store) CacheNodeCover(id, coverPhoto string) error {
+	if coverPhoto == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE nodes SET cover_photo = ? WHERE id = ? AND (cover_photo IS NULL OR cover_photo = '')`,
+		coverPhoto, id)
+	return err
+}
+
 // SetNodeBackground updates the background photo (relative path) of a node.
 func (s *Store) SetNodeBackground(id, photo string) error {
 	res, err := s.db.Exec(`UPDATE nodes SET background_photo = ? WHERE id = ?`, photo, id)

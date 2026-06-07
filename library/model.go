@@ -45,7 +45,7 @@ type Node struct {
 	ContentRating string `json:"contentRating,omitempty"`
 	Year          string `json:"year,omitempty"`
 	Studio        string `json:"studio,omitempty"`
-	// FolderPath is the folder name (relative path under the photos root),
+	// FolderPath is the folder path relative to the owning library root,
 	// exposed read-only for display.
 	FolderPath string `json:"folderPath,omitempty"`
 	// Favorite is populated for the current user in some listings.
@@ -62,6 +62,8 @@ type HomeNode struct {
 // Photo is a single image file within an album.
 type Photo struct {
 	Name string `json:"name"`
-	// Path is the path relative to the photos root, used for thumb/photo URLs.
+	// Path is a URL token derived from the photo's absolute filesystem path
+	// (leading slash and any drive letter stripped), used for thumb/photo URLs.
+	// Access is authorized per request against the owning library root.
 	Path string `json:"path"`
 }

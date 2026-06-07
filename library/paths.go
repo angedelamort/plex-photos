@@ -53,3 +53,30 @@ func RelToRoot(root, target string) (string, error) {
 	}
 	return rel, nil
 }
+
+// AbsToURLPath converts an absolute filesystem path into a slash-separated,
+// leading-slash-stripped token suitable for embedding in a thumb/photo URL. It
+// is a faithful, round-trippable encoding of the absolute path (the leading
+// separator is dropped for clean URLs; on Windows the drive letter is kept so
+// the path can be reconstructed). It is the inverse of URLPathToAbs.
+func AbsToURLPath(abs string) string {
+	p := filepath.ToSlash(filepath.Clean(abs))
+	return strings.TrimPrefix(p, "/")
+}
+
+// URLPathToAbs reconstructs an absolute filesystem path from a URL token
+// produced by AbsToURLPath. The result is cleaned but NOT yet authorized; the
+// caller must confine it to an accessible library root before use.
+func URLPathToAbs(token string) string {
+	token = strings.TrimPrefix(filepath.ToSlash(token), "/")
+	native := filepath.FromSlash(token)
+	// On POSIX, prepend the root separator. On Windows the token already starts
+	// with a drive letter (e.g. "C:/..."), so Clean alone yields an absolute path.
+	if filepath.IsAbs(native) {
+		return filepath.Clean(native)
+	}
+	if vol := filepath.VolumeName(native); vol != "" {
+		return filepath.Clean(native)
+	}
+	return filepath.Clean(string(filepath.Separator) + native)
+}

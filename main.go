@@ -47,9 +47,10 @@ func main() {
 	defer db.Close()
 
 	store := library.NewStore(db)
-	scanner := library.NewScanner(db, store, cfg.PhotosPath)
-	thumbs := library.NewThumbnailer(cfg.PhotosPath, thumbCache, cfg.ThumbWidth)
-	galleryHandler := library.NewHandler(store, scanner, thumbs, cfg.PhotosPath, artDir)
+	scanner := library.NewScanner(db, store)
+	thumbs := library.NewThumbnailer(thumbCache, cfg.ThumbWidth)
+	scanner.SetThumbnailer(thumbs)
+	galleryHandler := library.NewHandler(store, scanner, thumbs, artDir)
 	galleryHandler.SetVersion(version)
 
 	// Plex-like auto-detection of new content: a filesystem watcher over the

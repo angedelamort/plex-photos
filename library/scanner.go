@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -16,30 +17,40 @@ import (
 
 // Scanner walks library roots to populate collections and albums.
 type Scanner struct {
-	db         *sql.DB
-	store      *Store
-	photosRoot string
+	db     *sql.DB
+	store  *Store
+	thumbs *Thumbnailer
 
 	mu       sync.Mutex
 	progress map[string]*ScanProgress
 }
 
 // ScanProgress is a snapshot of an in-flight (or finished) library scan.
+// A scan runs in two phases: "index" (walk + DB upsert) then "thumbnails"
+// (pre-generate thumbnails for every photo). The Thumb* fields describe the
+// second phase so the UI can render a separate progress bar.
 type ScanProgress struct {
 	LibraryID  string `json:"libraryId"`
 	Running    bool   `json:"running"`
 	Done       bool   `json:"done"`
+	Phase      string `json:"phase"` // "index" | "thumbnails" | ""
 	Total      int    `json:"total"`
 	Current    int    `json:"current"`
 	CurrentDir string `json:"currentDir"`
+	ThumbTotal int    `json:"thumbTotal"`
+	ThumbDone  int    `json:"thumbDone"`
 	Error      string `json:"error,omitempty"`
 }
 
-// NewScanner builds a scanner. photosRoot is the container mount for /photos and
-// is used to compute paths relative to the photos volume for thumb/cover URLs.
-func NewScanner(db *sql.DB, store *Store, photosRoot string) *Scanner {
-	return &Scanner{db: db, store: store, photosRoot: photosRoot, progress: map[string]*ScanProgress{}}
+// NewScanner builds a scanner. Photo paths are derived from each library's own
+// root, so there is no global photos root.
+func NewScanner(db *sql.DB, store *Store) *Scanner {
+	return &Scanner{db: db, store: store, progress: map[string]*ScanProgress{}}
 }
+
+// SetThumbnailer wires the thumbnailer so scans can pre-generate thumbnails as a
+// second phase. If unset, scans skip thumbnail generation (lazy-only behavior).
+func (sc *Scanner) SetThumbnailer(t *Thumbnailer) { sc.thumbs = t }
 
 // Progress returns the latest scan progress snapshot for a library, if any.
 func (sc *Scanner) Progress(libraryID string) (ScanProgress, bool) {
@@ -74,13 +85,20 @@ func (sc *Scanner) updateProgress(libraryID string, fn func(*ScanProgress)) {
 // (level 1) and albums (level 2) into the database. Stale entries are removed.
 // It also reports progress so callers can render a live banner.
 func (sc *Scanner) Scan(lib *Library, source string) error {
-	sc.setProgress(ScanProgress{LibraryID: lib.ID, Running: true})
+	sc.setProgress(ScanProgress{LibraryID: lib.ID, Running: true, Phase: "index"})
 
 	err := sc.scan(lib)
+
+	// Phase 2: pre-generate thumbnails for the whole library so a finished scan
+	// means thumbnails are ready (rather than lazily generated on first view).
+	if err == nil && sc.thumbs != nil {
+		sc.generateThumbnails(lib)
+	}
 
 	sc.updateProgress(lib.ID, func(p *ScanProgress) {
 		p.Running = false
 		p.Done = true
+		p.Phase = ""
 		p.CurrentDir = ""
 		if err != nil {
 			p.Error = err.Error()
@@ -161,6 +179,67 @@ func (sc *Scanner) scan(lib *Library) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// generateThumbnails is scan phase 2: it pre-generates a thumbnail for every
+// photo in the library so the gallery renders instantly after a scan. Work is
+// spread across a small worker pool; failures on individual images are logged
+// but do not abort the phase. Progress is reported via ThumbTotal/ThumbDone.
+func (sc *Scanner) generateThumbnails(lib *Library) {
+	albumDirs, err := findAlbumDirs(lib.RootPath)
+	if err != nil {
+		log.Printf("thumbnail phase: list albums for %s: %v", lib.ID, err)
+		return
+	}
+
+	var rels []string
+	for _, dir := range albumDirs {
+		photos, err := sc.ListPhotos(dir)
+		if err != nil {
+			continue
+		}
+		for _, p := range photos {
+			rels = append(rels, p.Path)
+		}
+	}
+
+	sc.updateProgress(lib.ID, func(p *ScanProgress) {
+		p.Phase = "thumbnails"
+		p.ThumbTotal = len(rels)
+		p.ThumbDone = 0
+		p.CurrentDir = ""
+	})
+	if len(rels) == 0 {
+		return
+	}
+
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 4 {
+		workers = 4
+	}
+
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for rel := range jobs {
+				if _, err := sc.thumbs.Ensure(rel); err != nil {
+					log.Printf("thumbnail %q: %v", rel, err)
+				}
+				sc.updateProgress(lib.ID, func(p *ScanProgress) { p.ThumbDone++ })
+			}
+		}()
+	}
+	for _, rel := range rels {
+		jobs <- rel
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // allSubtreeDirs returns every (non-hidden) directory at or under root,
@@ -360,11 +439,7 @@ func (sc *Scanner) ListPhotos(albumFSPath string) ([]Photo, error) {
 	out := make([]Photo, 0, len(names))
 	for _, n := range names {
 		full := filepath.Join(albumFSPath, n)
-		rel, err := RelToRoot(sc.photosRoot, full)
-		if err != nil {
-			continue
-		}
-		out = append(out, Photo{Name: n, Path: rel})
+		out = append(out, Photo{Name: n, Path: AbsToURLPath(full)})
 	}
 	return out, nil
 }
@@ -386,9 +461,5 @@ func (sc *Scanner) FirstPhoto(dir string) string {
 		return ""
 	}
 	sort.Strings(names)
-	rel, err := RelToRoot(sc.photosRoot, filepath.Join(dir, names[0]))
-	if err != nil {
-		return ""
-	}
-	return rel
+	return AbsToURLPath(filepath.Join(dir, names[0]))
 }

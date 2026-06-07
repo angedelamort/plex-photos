@@ -30,11 +30,14 @@ automatically — no Plex server required.
 ```bash
 AUTH_PROVIDER=mock \
 MOCK_USER=dev MOCK_ADMIN=true \
-PHOTOS_PATH=./testdata/photos \
 DATA_PATH=./testdata/data \
 PORT=8099 \
 go run .
 ```
+
+> Photo folders are not configured via an env var. After the app starts, add a
+> library from the admin UI and pick its root folder with the directory browser
+> (it starts at `/photos` and you can navigate anywhere on the server).
 
 Then open http://localhost:8099.
 
@@ -56,7 +59,6 @@ go run testdata/gen/gen.go
 AUTH_PROVIDER=plex \
 PLEX_SERVER_URL=http://192.168.1.10:32400 \
 PLEX_MACHINE_ID=your-server-machine-id \
-PHOTOS_PATH=/path/to/photos \
 DATA_PATH=./data \
 go run .
 ```
@@ -169,13 +171,17 @@ configured, so complete first-run setup on your local network.
 | `PLEX_SERVER_URL` | | first-run wizard | Local Plex server URL. If unset, collected via the `/setup` wizard |
 | `PLEX_MACHINE_ID` | | first-run wizard | Plex server machine ID (validates server access). If unset, auto-detected/collected via the `/setup` wizard |
 | `SESSION_SECRET` | | auto-generated | Cookie signing key. If unset, a random key is generated and persisted to `<DATA_PATH>/session.key` on first run |
-| `PHOTOS_PATH` | yes | `/photos` | Path to the photos mount |
 | `DATA_PATH` | yes | `/config` | Single mountable data dir (arr-style `/config`): holds the SQLite DB plus a `cache/` subfolder with `cache/thumbs` and `cache/art` (uploaded custom posters/backgrounds) |
 | `PORT` | | `8099` | HTTP listen port |
 | `THUMB_WIDTH` | | `400` | Thumbnail width in pixels |
 | `TZ` | | `UTC` | Timezone for logs |
 | `MOCK_USER` | | `dev` | Username when `AUTH_PROVIDER=mock` |
 | `MOCK_ADMIN` | | `true` | Whether the mock user is an admin |
+
+> **Photos are not configured via an env var.** Mount your photo folders into
+> the container (conventionally at `/photos`) and add a library from the admin
+> UI, choosing its root folder with the directory browser. Each library's root
+> is the anchor for everything beneath it.
 
 ## Roadmap (V2)
 
