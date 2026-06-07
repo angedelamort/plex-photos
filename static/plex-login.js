@@ -55,26 +55,65 @@
     return { id: data.id, code: data.code };
   }
 
-  // Poll plex.tv for the auth token until it appears or the popup is closed.
+  // Poll plex.tv for the auth token until it appears or we time out.
+  //
+  // We intentionally do NOT abort when the popup reports `closed`. After the
+  // popup navigates to app.plex.tv (a cross-origin document), Cross-Origin
+  // -Opener-Policy can sever the opener relationship, making `popup.closed`
+  // unreliable (it may read true even while the user is still signing in, or
+  // Plex may auto-close the window on success before our next poll lands). So
+  // popup state is only used as a soft hint; the PIN itself is the source of
+  // truth and we keep polling until it yields a token or expires.
   function pollToken(pin, product, popup) {
+    const POLL_INTERVAL_MS = 1000;
+    const TIMEOUT_MS = 5 * 60 * 1000; // PINs are valid ~15min; cap our wait.
+    const deadline = Date.now() + TIMEOUT_MS;
+    let popupClosedAt = 0;
+
     return new Promise((resolve, reject) => {
       const tick = async () => {
         try {
-          const res = await fetch("https://plex.tv/api/v2/pins/" + pin.id, {
-            headers: headers(product),
-          });
+          // Per Plex's documented polling flow, include the PIN `code`
+          // alongside the client identifier when checking the PIN status.
+          const url =
+            "https://plex.tv/api/v2/pins/" +
+            pin.id +
+            "?" +
+            encode({ code: pin.code });
+          const res = await fetch(url, { headers: headers(product) });
           const data = await res.json();
           if (data && data.authToken) {
             resolve(data.authToken);
             return;
           }
+
+          // Soft cancellation: only give up if the popup has been closed for a
+          // grace period AND the PIN still has no token. This avoids the race
+          // where Plex closes the popup on success a moment before the token
+          // becomes readable on the PIN.
           if (popup && popup.closed) {
-            reject(new Error("Sign-in was cancelled."));
+            if (!popupClosedAt) popupClosedAt = Date.now();
+            if (Date.now() - popupClosedAt > 3000) {
+              reject(new Error("Sign-in was cancelled."));
+              return;
+            }
+          } else {
+            popupClosedAt = 0;
+          }
+
+          if (Date.now() > deadline) {
+            reject(new Error("Sign-in timed out. Please try again."));
             return;
           }
-          setTimeout(tick, 1000);
+          setTimeout(tick, POLL_INTERVAL_MS);
         } catch (e) {
-          reject(e);
+          // Transient network/CORS errors shouldn't kill the flow; retry until
+          // the deadline.
+          if (Date.now() > deadline) {
+            reject(e);
+            return;
+          }
+          setTimeout(tick, POLL_INTERVAL_MS);
         }
       };
       tick();
