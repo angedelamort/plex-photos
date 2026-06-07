@@ -457,6 +457,8 @@ body {
   position: fixed; inset: 0; background: rgba(8,8,8,0.97); z-index: 100;
   display: flex; align-items: center; justify-content: center;
 }
+/* Pure opaque black behind a running slideshow. */
+.viewer.slideshow-running { background: #000; }
 .viewer-img { max-width: 90vw; max-height: 82vh; object-fit: contain; border-radius: 4px; }
 .viewer-close {
   position: absolute; top: 18px; right: 20px;
@@ -486,6 +488,22 @@ body {
 .viewer.controls-hidden .viewer-close,
 .viewer.controls-hidden .viewer-nav,
 .viewer.controls-hidden .viewer-toolbar { opacity: 0; pointer-events: none; }
+
+.viewer-menu-wrap { position: relative; }
+.viewer-menu {
+  position: absolute; bottom: calc(100% + 8px); right: 0;
+  min-width: 200px; padding: 6px;
+  background: rgba(28,28,28,0.98); border: 0.5px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  display: flex; flex-direction: column; gap: 2px; z-index: 5;
+}
+.viewer-menu-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 9px 12px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--text);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.viewer-menu-item:hover { background: rgba(255,255,255,0.08); }
 .viewer { cursor: default; }
 .viewer.controls-hidden { cursor: none; }
 .viewer-caption { font-size: 12px; color: var(--text-muted); }
@@ -508,9 +526,10 @@ body {
   from { transform: var(--scroll-from, translateY(0)); }
   to { transform: var(--scroll-to, translateY(0)); }
 }
-.viewer-img.fade { animation: viewer-fade 0.5s ease; }
+.viewer-img.fade { animation: viewer-fade 1.6s ease; }
 .viewer-img.slide { animation: viewer-slide 0.45s ease; }
-@keyframes viewer-fade { from { opacity: 0; } to { opacity: 1; } }
+/* 0.8s fade-out of the previous frame, then 0.8s fade-in of the new one. */
+@keyframes viewer-fade { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
 @keyframes viewer-slide { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
 
 /* viewer info side panel */

@@ -17,7 +17,8 @@ const state = {
 // ── slideshow settings ──
 // fitMode: "fit" (contain, no crop) | "fill" (crop to fill) | "scroll" (fill width, auto-pan)
 const SS_DEFAULTS = {
-  interval: 3.5, transition: "fade", fitMode: "fit", loop: true, showInfo: false,
+  // interval is seconds per photo. Allowed range: 2s … 3600s (60 min). Default 30s (Google Photos-style).
+  interval: 30, transition: "fade", fitMode: "fit", loop: true, showInfo: false,
   shuffle: false, autostart: false, hideDelay: 3,
 };
 function loadSlideshowSettings() {
@@ -811,8 +812,9 @@ function openViewer(photos, index, album, slideshow) {
   state.photoIndex = index;
   state.currentAlbum = album;
   $("#viewer").hidden = false;
-  // Cover button only when viewing a real album (not collection/library slideshows).
-  $("#viewer-cover").hidden = !state.user.isAdmin || !(album && album.id && album.coverScope === undefined);
+  // Cover/background menu only when viewing a real album (not collection/library slideshows).
+  $("#viewer-menu-wrap").hidden = !state.user.isAdmin || !(album && album.id && album.coverScope === undefined);
+  closeViewerMenu();
   updateViewer();
   if (slideshow) startSlideshow(); else applyOverlay();
 }
@@ -900,6 +902,7 @@ function viewerStep(delta) {
 
 function closeViewer() {
   stopSlideshow();
+  closeViewerMenu();
   state.infoOpen = false;
   $("#viewer-info").hidden = true;
   $("#viewer").hidden = true;
@@ -928,6 +931,7 @@ $("#viewer").addEventListener("mouseleave", () => { if (state.slideshowActive) s
 function startSlideshow() {
   stopSlideshow();
   state.slideshowActive = true;
+  $("#viewer").classList.add("slideshow-running");
   $("#viewer-slideshow").innerHTML = `${icon("play")} ${esc(t("viewer.pause"))}`;
   updateViewer();
   state.slideshowTimer = setInterval(() => viewerStep(1), Math.max(1, ssSettings.interval) * 1000);
@@ -936,6 +940,7 @@ function startSlideshow() {
 function stopSlideshow() {
   if (state.slideshowTimer) { clearInterval(state.slideshowTimer); state.slideshowTimer = null; }
   state.slideshowActive = false;
+  $("#viewer").classList.remove("slideshow-running");
   cancelHideControls();
   $("#viewer-slideshow").innerHTML = `${icon("play")} ${esc(t("viewer.slideshow"))}`;
   const img = $("#viewer-img");
@@ -995,18 +1000,44 @@ async function loadInfo() {
   }
 }
 
-async function setCurrentAsCover() {
+// ── viewer "..." menu (set poster / background) ──
+function toggleViewerMenu() {
+  const menu = $("#viewer-menu");
+  if (menu.hidden) openViewerMenu(); else closeViewerMenu();
+}
+
+function openViewerMenu() {
+  $("#viewer-menu").hidden = false;
+  $("#viewer-menu-btn").setAttribute("aria-expanded", "true");
+}
+
+function closeViewerMenu() {
+  const menu = $("#viewer-menu");
+  if (!menu) return;
+  menu.hidden = true;
+  $("#viewer-menu-btn").setAttribute("aria-expanded", "false");
+}
+
+// setCurrentArt sets the current photo as the album's poster (cover) or background.
+// kind: "cover" | "background".
+async function setCurrentArt(kind) {
+  closeViewerMenu();
   const p = state.photos[state.photoIndex];
   if (!p || !state.currentAlbum) return;
+  const item = kind === "background" ? $("#viewer-set-background") : $("#viewer-set-poster");
+  const iconName = kind === "background" ? "image" : "star";
+  const setLabel = kind === "background" ? t("viewer.setBackground") : t("viewer.setPoster");
+  const doneLabel = kind === "background" ? t("viewer.backgroundSet") : t("viewer.posterSet");
   try {
     await api("/api/cover", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: "node", id: state.currentAlbum.id, photo: p.path }),
+      body: JSON.stringify({ target: "node", id: state.currentAlbum.id, photo: p.path, kind }),
     });
-    state.currentAlbum.coverPhoto = p.path;
-    $("#viewer-cover").innerHTML = `${icon("star")} ${esc(t("viewer.coverSet"))}`;
-    setTimeout(() => { $("#viewer-cover").innerHTML = `${icon("star")} ${esc(t("viewer.setCover"))}`; }, 1500);
+    if (kind === "background") state.currentAlbum.backgroundPhoto = p.path;
+    else state.currentAlbum.coverPhoto = p.path;
+    item.innerHTML = `${icon(iconName)} ${esc(doneLabel)}`;
+    setTimeout(() => { item.innerHTML = `${icon(iconName)} ${esc(setLabel)}`; }, 1500);
   } catch (e) {
     alert(t("alert.error", { msg: e.message }));
   }
@@ -1027,7 +1058,7 @@ function saveSs() {
   // Preserve fields that aren't in this modal (shuffle, autostart, hideDelay).
   ssSettings = {
     ...ssSettings,
-    interval: parseFloat($("#ss-interval").value) || SS_DEFAULTS.interval,
+    interval: Math.min(3600, Math.max(2, parseFloat($("#ss-interval").value) || SS_DEFAULTS.interval)),
     transition: $("#ss-transition").value,
     fitMode: $("#ss-fit").value,
     loop: $("#ss-loop").checked,
@@ -1116,19 +1147,13 @@ function fillArtGrid(gridEl, photos, currentSel, isBg) {
 }
 
 // loadEntityPhotos returns the photos used to populate the poster/background
-// grids. Only albums list their own photos here; libraries and collections are
-// containers, so (like Plex) their art grids start empty and only show the
-// currently-set cover/background plus any custom-uploaded art. This avoids
-// dumping every photo in the library into the picker.
-async function loadEntityPhotos(entity) {
-  let photos = entity.photos || [];
-  if (photos.length === 0 && entity.type === "node" && entity.id) {
-    try {
-      const ad = await api(`/api/nodes/${entity.id}`);
-      photos = ad.photos || [];
-    } catch (_) {}
-  }
-  return photos;
+// grids. Like Plex, the picker does NOT dump every photo in the album: the grid
+// starts with just the default (auto-generated, first-scanned) cover/background
+// — surfaced by fillArtGrid from the current selection — plus any custom art the
+// user explicitly adds via the "choose an image" button or by setting a photo as
+// the cover from the viewer. So we intentionally return no listed photos here.
+async function loadEntityPhotos(_entity) {
+  return [];
 }
 
 async function openEditModal(entity) {
@@ -1645,9 +1670,11 @@ function renderSlideshowSettings(main) {
     group.appendChild(r);
   };
 
-  const interval = el("input", { type: "number", min: "1", max: "60", step: "0.5", value: ssSettings.interval });
+  // Duration per photo: 2s minimum, 3600s (60 min) maximum.
+  const interval = el("input", { type: "number", min: "2", max: "3600", step: "1", value: ssSettings.interval });
   interval.addEventListener("change", () => {
-    const v = parseFloat(interval.value) || SS_DEFAULTS.interval;
+    let v = parseFloat(interval.value) || SS_DEFAULTS.interval;
+    v = Math.min(3600, Math.max(2, v));
     interval.value = v;
     updateSetting("interval", v);
   });
@@ -1840,7 +1867,12 @@ $("#viewer-close").addEventListener("click", closeViewer);
 $("#viewer-prev").addEventListener("click", () => { stopSlideshow(); viewerStep(-1); });
 $("#viewer-next").addEventListener("click", () => { stopSlideshow(); viewerStep(1); });
 $("#viewer-slideshow").addEventListener("click", () => { if (state.slideshowActive) stopSlideshow(); else startSlideshow(); });
-$("#viewer-cover").addEventListener("click", setCurrentAsCover);
+$("#viewer-menu-btn").addEventListener("click", (e) => { e.stopPropagation(); toggleViewerMenu(); });
+$("#viewer-set-poster").addEventListener("click", () => setCurrentArt("cover"));
+$("#viewer-set-background").addEventListener("click", () => setCurrentArt("background"));
+document.addEventListener("click", (e) => {
+  if (!$("#viewer-menu").hidden && !e.target.closest("#viewer-menu-wrap")) closeViewerMenu();
+});
 $("#viewer-info-btn").addEventListener("click", toggleInfo);
 $("#viewer-info-close").addEventListener("click", toggleInfo);
 $("#viewer-settings-btn").addEventListener("click", openSsModal);

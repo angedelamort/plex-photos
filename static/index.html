@@ -113,9 +113,19 @@
     <button class="btn" id="viewer-settings-btn" data-i18n-title="viewer.slideshowSettings" title="Slideshow settings">
       <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
     </button>
-    <button class="btn accent" id="viewer-cover" hidden>
-      <svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg> <span data-i18n="viewer.setCover">Set as cover</span>
-    </button>
+    <div class="viewer-menu-wrap" id="viewer-menu-wrap" hidden>
+      <button class="btn" id="viewer-menu-btn" data-i18n-title="viewer.more" title="More" aria-haspopup="true" aria-expanded="false">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-dots"/></svg>
+      </button>
+      <div class="viewer-menu" id="viewer-menu" hidden role="menu">
+        <button class="viewer-menu-item" id="viewer-set-poster" role="menuitem">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg> <span data-i18n="viewer.setPoster">Set as poster</span>
+        </button>
+        <button class="viewer-menu-item" id="viewer-set-background" role="menuitem">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-image"/></svg> <span data-i18n="viewer.setBackground">Set as background</span>
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -125,7 +135,7 @@
     <div class="modal-title" data-i18n="ss.title">Slideshow settings</div>
     <label class="field">
       <span data-i18n="ss.duration">Duration per photo (seconds)</span>
-      <input type="number" id="ss-interval" min="1" max="60" step="0.5">
+      <input type="number" id="ss-interval" min="2" max="3600" step="1">
     </label>
     <label class="field">
       <span data-i18n="ss.transition">Transition</span>
