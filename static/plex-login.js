@@ -82,6 +82,7 @@
             encode({ code: pin.code });
           const res = await fetch(url, { headers: headers(product) });
           const data = await res.json();
+          console.log("[plex-login] poll", res.status, "authToken?", !!(data && data.authToken));
           if (data && data.authToken) {
             resolve(data.authToken);
             return;
@@ -132,11 +133,15 @@
     );
   }
 
+  const log = (...args) => console.log("[plex-login]", ...args);
+
   async function login(setStatus) {
     const popup = centeredPopup(600, 700);
     try {
       const product = await getProduct();
+      log("product", product, "clientID", clientId());
       const pin = await getPin(product);
+      log("pin created", pin);
 
       const params = {
         clientID: clientId(),
@@ -147,9 +152,11 @@
       const authUrl = AUTH_URL + encode(params);
       if (popup) popup.location.href = authUrl;
       else window.location.href = authUrl; // popup blocked: fall back to redirect
+      log("auth url set, popup?", !!popup);
 
       setStatus && setStatus("Waiting for Plex sign-in\u2026");
       const token = await pollToken(pin, product, popup);
+      log("token received", token ? token.slice(0, 6) + "\u2026" : token);
       if (popup && !popup.closed) popup.close();
 
       const res = await fetch("/api/auth/plex/exchange", {
@@ -159,8 +166,10 @@
       });
       let data = {};
       try { data = await res.json(); } catch (_) {}
+      log("exchange status", res.status, data);
       if (!res.ok) throw new Error(data.error || "Sign-in failed.");
     } catch (e) {
+      log("login failed", e);
       if (popup && !popup.closed) popup.close();
       throw e;
     }

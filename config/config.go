@@ -24,6 +24,13 @@ type Config struct {
 	// AuthProvider selects the authentication backend: "plex" or "mock".
 	AuthProvider string
 
+	// CookieSecure sets the Secure flag on session/auth cookies. It must be
+	// false when the app is served over plain HTTP (the common self-hosted
+	// case: LAN IP, Synology, etc.), because browsers silently drop Secure
+	// cookies on non-HTTPS origins — which would break login. Enable it only
+	// when the app is reached over HTTPS (e.g. behind a TLS reverse proxy).
+	CookieSecure bool
+
 	// Mock provider settings (only used when AuthProvider == "mock").
 	MockUser  string
 	MockAdmin bool
@@ -42,6 +49,7 @@ func Load() (*Config, error) {
 		TimeZone:      getEnv("TZ", "UTC"),
 		LogLevel:      getEnv("LOG_LEVEL", "info"),
 		AuthProvider:  strings.ToLower(getEnv("AUTH_PROVIDER", "plex")),
+		CookieSecure:  getEnvBool("COOKIE_SECURE", false),
 		MockUser:      getEnv("MOCK_USER", "dev"),
 		MockAdmin:     getEnvBool("MOCK_ADMIN", true),
 	}

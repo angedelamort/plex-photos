@@ -61,8 +61,11 @@ func main() {
 	}
 	defer autoScan.Stop()
 
-	// Secure cookies are disabled in mock/dev mode (local HTTP).
-	secureCookies := cfg.AuthProvider != "mock"
+	// Secure cookies require an HTTPS origin; browsers drop Secure cookies on
+	// plain HTTP, which silently breaks login. Most self-hosted deployments
+	// (LAN IP, Synology) are HTTP, so this defaults off and is opt-in via
+	// COOKIE_SECURE=true for HTTPS/reverse-proxy setups. Mock/dev is always off.
+	secureCookies := cfg.AuthProvider != "mock" && cfg.CookieSecure
 	sessionSecret, err := auth.ResolveSessionSecret(cfg.SessionSecret, cfg.DataPath)
 	if err != nil {
 		log.Fatalf("session secret: %v", err)
