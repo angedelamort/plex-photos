@@ -6,14 +6,26 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// SettingThumbWorkers is the settings key holding how many thumbnails are
+// generated concurrently during a scan. Fewer workers = lower CPU pressure so
+// the web server stays responsive while a scan runs. Default is 1.
+const SettingThumbWorkers = "thumbnail_workers"
+
+// defaultThumbWorkers is the conservative default concurrency for the thumbnail
+// phase: serial generation, leaving CPU headroom for serving requests.
+const defaultThumbWorkers = 1
+
+// maxThumbWorkers caps the configurable concurrency to avoid pegging every core.
+const maxThumbWorkers = 8
 
 // Scanner walks library roots to populate collections and albums.
 type Scanner struct {
@@ -23,6 +35,8 @@ type Scanner struct {
 
 	mu       sync.Mutex
 	progress map[string]*ScanProgress
+
+	thumbWorkers int
 }
 
 // ScanProgress is a snapshot of an in-flight (or finished) library scan.
@@ -45,12 +59,47 @@ type ScanProgress struct {
 // NewScanner builds a scanner. Photo paths are derived from each library's own
 // root, so there is no global photos root.
 func NewScanner(db *sql.DB, store *Store) *Scanner {
-	return &Scanner{db: db, store: store, progress: map[string]*ScanProgress{}}
+	return &Scanner{db: db, store: store, progress: map[string]*ScanProgress{}, thumbWorkers: defaultThumbWorkers}
 }
 
 // SetThumbnailer wires the thumbnailer so scans can pre-generate thumbnails as a
 // second phase. If unset, scans skip thumbnail generation (lazy-only behavior).
 func (sc *Scanner) SetThumbnailer(t *Thumbnailer) { sc.thumbs = t }
+
+// ThumbWorkers returns the configured thumbnail generation concurrency.
+func (sc *Scanner) ThumbWorkers() int {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.thumbWorkers
+}
+
+// SetThumbWorkers clamps and sets the thumbnail generation concurrency used by
+// future scans. Values are clamped to [1, maxThumbWorkers].
+func (sc *Scanner) SetThumbWorkers(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > maxThumbWorkers {
+		n = maxThumbWorkers
+	}
+	sc.mu.Lock()
+	sc.thumbWorkers = n
+	sc.mu.Unlock()
+}
+
+// LoadThumbWorkers reads the persisted thumbnail worker count (falling back to
+// the default) and applies it. Called at startup.
+func (sc *Scanner) LoadThumbWorkers() {
+	n := defaultThumbWorkers
+	if sc.store != nil {
+		if v, err := sc.store.GetSetting(SettingThumbWorkers, strconv.Itoa(defaultThumbWorkers)); err == nil {
+			if parsed, perr := strconv.Atoi(strings.TrimSpace(v)); perr == nil {
+				n = parsed
+			}
+		}
+	}
+	sc.SetThumbWorkers(n)
+}
 
 // Progress returns the latest scan progress snapshot for a library, if any.
 func (sc *Scanner) Progress(libraryID string) (ScanProgress, bool) {
@@ -213,12 +262,9 @@ func (sc *Scanner) generateThumbnails(lib *Library) {
 		return
 	}
 
-	workers := runtime.NumCPU()
+	workers := sc.ThumbWorkers()
 	if workers < 1 {
 		workers = 1
-	}
-	if workers > 4 {
-		workers = 4
 	}
 
 	jobs := make(chan string)
@@ -274,7 +320,7 @@ func subdirs(dir string) ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+		if e.IsDir() && !SkipDirName(e.Name()) {
 			names = append(names, e.Name())
 		}
 	}
@@ -299,7 +345,7 @@ func findAlbumDirs(colPath string) ([]string, error) {
 		for _, e := range entries {
 			name := e.Name()
 			if e.IsDir() {
-				if !strings.HasPrefix(name, ".") {
+				if !SkipDirName(name) {
 					subDirs = append(subDirs, filepath.Join(dir, name))
 				}
 				continue

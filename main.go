@@ -50,6 +50,10 @@ func main() {
 	scanner := library.NewScanner(db, store)
 	thumbs := library.NewThumbnailer(thumbCache, cfg.ThumbWidth)
 	scanner.SetThumbnailer(thumbs)
+	scanner.LoadThumbWorkers()
+	if f, err := store.GetSetting(library.SettingThumbFilter, ""); err == nil && f != "" {
+		thumbs.SetFilter(f)
+	}
 	galleryHandler := library.NewHandler(store, scanner, thumbs, artDir)
 	galleryHandler.SetVersion(version)
 

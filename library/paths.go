@@ -19,6 +19,28 @@ func IsImage(name string) bool {
 	return imageExts[strings.ToLower(filepath.Ext(name))]
 }
 
+// systemDirs are directory names that some platforms/NAS devices create
+// alongside real media (e.g. Synology's "@eaDir" thumbnail caches). They hold
+// no user content and must never be scanned as sub-collections, otherwise a
+// flat album folder is misreported as having children.
+var systemDirs = map[string]bool{
+	"@eaDir":                    true, // Synology DSM thumbnail/metadata cache
+	"#recycle":                  true, // Synology recycle bin
+	"$RECYCLE.BIN":              true, // Windows recycle bin
+	"System Volume Information": true, // Windows
+	"lost+found":                true, // Linux fsck
+}
+
+// SkipDirName reports whether a directory should be ignored when walking a
+// library tree. Hidden (dot-prefixed) directories and known system/junk
+// directories are skipped so they never become phantom "collections".
+func SkipDirName(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	return systemDirs[name]
+}
+
 // ErrUnsafePath is returned when a path escapes its allowed root.
 var ErrUnsafePath = errors.New("unsafe path")
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		"email":    s.Email,
 		"isAdmin":  s.IsAdmin,
 		"version":  h.version,
+		"rowLimit": h.rowLimit(),
 	})
 }
 
@@ -319,6 +321,30 @@ func (h *Handler) AdminScanProgress(w http.ResponseWriter, r *http.Request) {
 
 // --- Admin: settings ---
 
+// SettingRowLimit is the settings key holding the maximum number of items
+// loaded into each home/library/collection carousel row before the user must
+// scroll. Keeps very large folders snappy by paging instead of rendering all.
+const SettingRowLimit = "row_limit"
+
+// defaultRowLimit caps each carousel row when none is configured.
+const defaultRowLimit = 16
+
+// rowLimit returns the configured per-row item cap, falling back to the default.
+func (h *Handler) rowLimit() int {
+	if h.store == nil {
+		return defaultRowLimit
+	}
+	v, err := h.store.GetSetting(SettingRowLimit, strconv.Itoa(defaultRowLimit))
+	if err != nil {
+		return defaultRowLimit
+	}
+	n, perr := strconv.Atoi(strings.TrimSpace(v))
+	if perr != nil || n < 1 {
+		return defaultRowLimit
+	}
+	return n
+}
+
 // AdminGetSettings returns global app settings (currently the auto-scan
 // interval). Hours of 0 means the periodic rescan is disabled.
 func (h *Handler) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +352,20 @@ func (h *Handler) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
 	if h.autoScan != nil {
 		hours = int(h.autoScan.Interval().Hours())
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"autoScanIntervalHours": hours})
+	thumbWorkers := defaultThumbWorkers
+	if h.scanner != nil {
+		thumbWorkers = h.scanner.ThumbWorkers()
+	}
+	thumbFilter := defaultThumbFilter
+	if h.thumbs != nil {
+		thumbFilter = h.thumbs.Filter()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"autoScanIntervalHours": hours,
+		"thumbnailWorkers":      thumbWorkers,
+		"thumbnailFilter":       thumbFilter,
+		"rowLimit":              h.rowLimit(),
+	})
 }
 
 // AdminUpdateSettings updates global app settings. Currently supports the
@@ -334,7 +373,10 @@ func (h *Handler) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
 // always stays on).
 func (h *Handler) AdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		AutoScanIntervalHours *int `json:"autoScanIntervalHours"`
+		AutoScanIntervalHours *int    `json:"autoScanIntervalHours"`
+		ThumbnailWorkers      *int    `json:"thumbnailWorkers"`
+		ThumbnailFilter       *string `json:"thumbnailFilter"`
+		RowLimit              *int    `json:"rowLimit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
@@ -342,6 +384,30 @@ func (h *Handler) AdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.AutoScanIntervalHours != nil && h.autoScan != nil {
 		if err := h.autoScan.SetIntervalHours(*in.AutoScanIntervalHours); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if in.ThumbnailWorkers != nil && h.scanner != nil {
+		h.scanner.SetThumbWorkers(*in.ThumbnailWorkers)
+		if err := h.store.SetSetting(SettingThumbWorkers, strconv.Itoa(h.scanner.ThumbWorkers())); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if in.ThumbnailFilter != nil && h.thumbs != nil {
+		eff := h.thumbs.SetFilter(*in.ThumbnailFilter)
+		if err := h.store.SetSetting(SettingThumbFilter, eff); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if in.RowLimit != nil {
+		n := *in.RowLimit
+		if n < 1 {
+			n = defaultRowLimit
+		}
+		if err := h.store.SetSetting(SettingRowLimit, strconv.Itoa(n)); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

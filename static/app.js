@@ -381,11 +381,12 @@ async function renderHome(main) {
       class: "section-header",
       html: `<div><div class="section-title">${esc(lib.name)}</div><div class="section-sub">${esc(t("home.collectionCount", { n: lib.collectionCount }))}</div></div>`,
     }));
-    const grid = el("div", { class: "grid grid--landscape" });
     const nodes = await nodesPs[i];
-    nodes.forEach((n) => grid.appendChild(nodeCard(lib.id, n)));
-    if (nodes.length === 0) grid.appendChild(el("div", { class: "empty", text: t("home.emptyScan") }));
-    block.appendChild(grid);
+    if (nodes.length === 0) {
+      block.appendChild(el("div", { class: "empty", text: t("home.emptyScan") }));
+    } else {
+      block.appendChild(carousel(nodes.map((n) => nodeCard(lib.id, n)), { variant: "landscape" }));
+    }
     main.appendChild(block);
   }
 }
@@ -415,10 +416,11 @@ async function renderLibrary(main, libraryId) {
     description: lib?.summary || "",
   }));
 
-  const grid = el("div", { class: "grid grid--landscape" });
-  nodes.forEach((c) => grid.appendChild(nodeCard(libraryId, c)));
-  if (nodes.length === 0) grid.appendChild(el("div", { class: "empty", text: t("home.emptyScan") }));
-  main.appendChild(grid);
+  if (nodes.length === 0) {
+    main.appendChild(el("div", { class: "empty", text: t("home.emptyScan") }));
+  } else {
+    main.appendChild(carousel(nodes.map((c) => nodeCard(libraryId, c)), { variant: "landscape" }));
+  }
 }
 
 // ── hero + menu helpers ──
@@ -599,10 +601,54 @@ function nodeCard(libraryId, n, opts = {}) {
 function swimlane(title, cards) {
   const block = el("div", { class: "lib-block" });
   block.appendChild(el("div", { class: "section-header", html: `<div><div class="section-title">${esc(title)}</div></div>` }));
-  const row = el("div", { class: "row-scroll" });
-  cards.forEach((c) => row.appendChild(c));
-  block.appendChild(row);
+  block.appendChild(carousel(cards));
   return block;
+}
+
+// carousel renders cards in a single horizontally-scrolling row with prev/next
+// buttons (Overseerr-style). Pressing a button pages by the visible width, so
+// the number of cards advanced scales with the screen size. Buttons hide at the
+// ends and the whole control degrades to a plain scrollable row on touch.
+// opts: { variant: "landscape" | "poster" } controls card sizing in the row.
+function rowLimit() {
+  const n = state.user && state.user.rowLimit;
+  return Number.isInteger(n) && n > 0 ? n : 16;
+}
+
+function carousel(cards, opts = {}) {
+  const wrap = el("div", { class: "carousel" + (opts.variant ? " carousel--" + opts.variant : "") });
+  const row = el("div", { class: "row-scroll" });
+  // Cap how many items load into a single row to keep large folders snappy.
+  cards.slice(0, rowLimit()).forEach((c) => row.appendChild(c));
+
+  const prev = el("button", { class: "carousel-nav carousel-prev", "aria-label": t("viewer.prev"), title: t("viewer.prev"), html: icon("chevron-left") });
+  const next = el("button", { class: "carousel-nav carousel-next", "aria-label": t("viewer.next"), title: t("viewer.next"), html: icon("chevron-right") });
+
+  const page = (dir) => {
+    // Scroll by ~90% of the viewport so a sliver of the next page stays visible
+    // as a continuity cue, mirroring how Overseerr pages its sliders.
+    const amount = Math.max(row.clientWidth * 0.9, 160);
+    row.scrollBy({ left: dir * amount, behavior: "smooth" });
+  };
+  prev.addEventListener("click", () => page(-1));
+  next.addEventListener("click", () => page(1));
+
+  const updateButtons = () => {
+    const max = row.scrollWidth - row.clientWidth;
+    const overflowing = max > 4;
+    wrap.classList.toggle("has-overflow", overflowing);
+    prev.classList.toggle("disabled", row.scrollLeft <= 1);
+    next.classList.toggle("disabled", row.scrollLeft >= max - 1);
+  };
+  row.addEventListener("scroll", updateButtons, { passive: true });
+  window.addEventListener("resize", updateButtons);
+  // Defer once so layout (and lazily-sized cards) settle before measuring.
+  requestAnimationFrame(updateButtons);
+
+  wrap.appendChild(prev);
+  wrap.appendChild(row);
+  wrap.appendChild(next);
+  return wrap;
 }
 
 // renderNode renders a single tree node: sub-collections as a grid on top
@@ -702,12 +748,11 @@ async function renderNode(main, route) {
   if (childCollections.length > 0) {
     const block = el("div", { class: "lib-block" });
     block.appendChild(el("div", { class: "section-header", html: `<div><div class="section-title">${esc(t("node.collections"))}</div></div>` }));
-    const cgrid = el("div", { class: "grid grid--landscape" });
-    childCollections.forEach((c) => {
+    const cards = childCollections.map((c) => {
       if (c.favorite) state.favorites.add(c.id);
-      cgrid.appendChild(nodeCard(route.libraryId, c));
+      return nodeCard(route.libraryId, c);
     });
-    block.appendChild(cgrid);
+    block.appendChild(carousel(cards, { variant: "landscape" }));
     main.appendChild(block);
   }
 
@@ -715,12 +760,11 @@ async function renderNode(main, route) {
   if (childAlbums.length > 0) {
     const block = el("div", { class: "lib-block" });
     block.appendChild(el("div", { class: "section-header", html: `<div><div class="section-title">${esc(t("node.albums"))}</div></div>` }));
-    const agrid = el("div", { class: "grid" });
-    childAlbums.forEach((c) => {
+    const cards = childAlbums.map((c) => {
       if (c.favorite) state.favorites.add(c.id);
-      agrid.appendChild(nodeCard(route.libraryId, c, { poster: true, parent: node.name }));
+      return nodeCard(route.libraryId, c, { poster: true, parent: node.name });
     });
-    block.appendChild(agrid);
+    block.appendChild(carousel(cards, { variant: "poster" }));
     main.appendChild(block);
   }
 
@@ -1233,6 +1277,105 @@ async function buildAutoScanPanel() {
   return panel;
 }
 
+// ── admin: thumbnail CPU settings ──
+async function buildThumbWorkersPanel() {
+  let workers = 1;
+  let filter = "lanczos";
+  try {
+    const s = await api("/api/admin/settings");
+    if (s.thumbnailWorkers) workers = s.thumbnailWorkers;
+    if (s.thumbnailFilter) filter = s.thumbnailFilter;
+  } catch (e) { /* fall back to defaults */ }
+
+  async function save(body) {
+    try {
+      await api("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      alert(t("alert.error", { msg: e.message }));
+    }
+  }
+
+  const panel = el("div", { class: "lib-row" });
+  panel.appendChild(el("div", {
+    html: `<div class="lib-name">${esc(t("admin.thumbWorkers"))}</div><div class="lib-path">${esc(t("admin.thumbWorkersHint"))}</div>`,
+  }));
+
+  const actions = el("div", { class: "lib-actions" });
+
+  const workerSelect = el("select", { class: "btn sm" });
+  [1, 2, 3, 4, 6, 8].forEach((val) => {
+    const opt = el("option", { text: t("admin.thumbWorkersOption", { n: val }) });
+    opt.value = String(val);
+    if (val === workers) opt.selected = true;
+    workerSelect.appendChild(opt);
+  });
+  workerSelect.addEventListener("change", (ev) => {
+    save({ thumbnailWorkers: parseInt(ev.target.value, 10) || 1 });
+  });
+  actions.appendChild(workerSelect);
+
+  const filterSelect = el("select", { class: "btn sm" });
+  ["lanczos", "catmullrom", "linear", "box", "nearest"].forEach((val) => {
+    const opt = el("option", { text: t("admin.thumbFilter." + val) });
+    opt.value = val;
+    if (val === filter) opt.selected = true;
+    filterSelect.appendChild(opt);
+  });
+  filterSelect.addEventListener("change", (ev) => {
+    save({ thumbnailFilter: ev.target.value });
+  });
+  actions.appendChild(filterSelect);
+
+  panel.appendChild(actions);
+  return panel;
+}
+
+// ── admin: row item limit ──
+// How many items load into each home/library/collection carousel row before
+// the user scrolls. Lower keeps very large folders snappy.
+async function buildRowLimitPanel() {
+  let current = 16;
+  try {
+    const s = await api("/api/admin/settings");
+    if (s.rowLimit) current = s.rowLimit;
+  } catch (e) { /* fall back to default */ }
+
+  const panel = el("div", { class: "lib-row" });
+  panel.appendChild(el("div", {
+    html: `<div class="lib-name">${esc(t("admin.rowLimit"))}</div><div class="lib-path">${esc(t("admin.rowLimitHint"))}</div>`,
+  }));
+
+  const actions = el("div", { class: "lib-actions" });
+  const select = el("select", { class: "btn sm" });
+  [8, 12, 16, 24, 32, 48].forEach((val) => {
+    const opt = el("option", { text: String(val) });
+    opt.value = String(val);
+    if (val === current) opt.selected = true;
+    select.appendChild(opt);
+  });
+  select.addEventListener("change", async (ev) => {
+    const n = parseInt(ev.target.value, 10) || 16;
+    try {
+      await api("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rowLimit: n }),
+      });
+      // Reflect immediately so carousels rendered this session pick it up.
+      if (state.user) state.user.rowLimit = n;
+    } catch (e) {
+      alert(t("alert.error", { msg: e.message }));
+    }
+  });
+  actions.appendChild(select);
+  panel.appendChild(actions);
+  return panel;
+}
+
 // ── admin ──
 async function renderAdmin(main) {
   const libs = await api("/api/admin/libraries");
@@ -1243,6 +1386,8 @@ async function renderAdmin(main) {
   main.appendChild(header);
 
   main.appendChild(await buildAutoScanPanel());
+  main.appendChild(await buildThumbWorkersPanel());
+  main.appendChild(await buildRowLimitPanel());
 
   if (libs.length === 0) {
     main.appendChild(el("div", { class: "empty", text: t("admin.noLibrary") }));

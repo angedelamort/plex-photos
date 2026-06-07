@@ -10,13 +10,42 @@ import (
 	"github.com/disintegration/imaging"
 )
 
+// SettingThumbFilter is the settings key holding the resampling filter used to
+// downscale thumbnails. Cheaper filters cost less CPU per image at some quality
+// cost; "lanczos" (the default) is the highest quality.
+const SettingThumbFilter = "thumbnail_filter"
+
+// defaultThumbFilter is the resampling filter used when none is configured.
+const defaultThumbFilter = "lanczos"
+
+// thumbFilters maps the persisted/API filter name to an imaging.ResampleFilter.
+// Names are stable identifiers used by the settings API and UI.
+var thumbFilters = map[string]imaging.ResampleFilter{
+	"lanczos":    imaging.Lanczos,
+	"catmullrom": imaging.CatmullRom,
+	"linear":     imaging.Linear,
+	"box":        imaging.Box,
+	"nearest":    imaging.NearestNeighbor,
+}
+
+// resampleFilterFor resolves a filter name to its imaging filter, falling back
+// to the default for unknown/empty names.
+func resampleFilterFor(name string) imaging.ResampleFilter {
+	if f, ok := thumbFilters[strings.ToLower(strings.TrimSpace(name))]; ok {
+		return f
+	}
+	return imaging.Lanczos
+}
+
 // Thumbnailer generates and caches thumbnails on demand.
 type Thumbnailer struct {
 	cacheRoot string
 	width     int
 
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	mu         sync.Mutex
+	locks      map[string]*sync.Mutex
+	filterName string
+	filter     imaging.ResampleFilter
 }
 
 // NewThumbnailer creates a thumbnailer. cacheRoot is where generated thumbs are
@@ -24,10 +53,40 @@ type Thumbnailer struct {
 // authorized by the caller against an accessible library root).
 func NewThumbnailer(cacheRoot string, width int) *Thumbnailer {
 	return &Thumbnailer{
-		cacheRoot: cacheRoot,
-		width:     width,
-		locks:     map[string]*sync.Mutex{},
+		cacheRoot:  cacheRoot,
+		width:      width,
+		locks:      map[string]*sync.Mutex{},
+		filterName: defaultThumbFilter,
+		filter:     imaging.Lanczos,
 	}
+}
+
+// Filter returns the configured resampling filter name.
+func (t *Thumbnailer) Filter() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.filterName
+}
+
+// SetFilter sets the resampling filter by name. Unknown names fall back to the
+// default (lanczos). Returns the effective (normalized) filter name.
+func (t *Thumbnailer) SetFilter(name string) string {
+	norm := strings.ToLower(strings.TrimSpace(name))
+	if _, ok := thumbFilters[norm]; !ok {
+		norm = defaultThumbFilter
+	}
+	t.mu.Lock()
+	t.filterName = norm
+	t.filter = thumbFilters[norm]
+	t.mu.Unlock()
+	return norm
+}
+
+// resampleFilter returns the currently configured filter (thread-safe).
+func (t *Thumbnailer) resampleFilter() imaging.ResampleFilter {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.filter
 }
 
 // cachePath maps an absolute source image path to its cached thumbnail path,
@@ -128,7 +187,7 @@ func (t *Thumbnailer) generate(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open image: %w", err)
 	}
-	thumb := imaging.Resize(img, t.width, 0, imaging.Lanczos)
+	thumb := imaging.Resize(img, t.width, 0, t.resampleFilter())
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("create thumb dir: %w", err)
