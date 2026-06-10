@@ -379,6 +379,49 @@ func (h *Handler) AdminRegenerateThumbnails(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "count": len(libs)})
 }
 
+// AdminCleanupThumbnails enqueues orphaned-thumbnail cleanup jobs. With a {id}
+// path value it targets one library; otherwise it cleans every library (one job
+// per library, run serially). Cleanup is the only path that deletes cached
+// thumbnails; scanning and regeneration never do.
+func (h *Handler) AdminCleanupThumbnails(w http.ResponseWriter, r *http.Request) {
+	if h.jobs == nil {
+		writeErr(w, http.StatusServiceUnavailable, "job manager unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	var libs []*Library
+	if id != "" {
+		lib, err := h.store.GetLibrary(id)
+		if errors.Is(err, ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "library not found")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		libs = []*Library{lib}
+	} else {
+		all, err := h.store.ListLibraries()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		libs = all
+	}
+	for _, lib := range libs {
+		lib := lib
+		h.jobs.Enqueue(JobTypeCleanup, lib.Name, func(p *JobProgress) error {
+			if err := h.scanner.CleanupThumbnails(lib, p); err != nil {
+				log.Printf("cleanup thumbnails %s failed: %v", lib.ID, err)
+				return err
+			}
+			return nil
+		})
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "count": len(libs)})
+}
+
 // AdminScanProgress reports the live progress of a library scan.
 func (h *Handler) AdminScanProgress(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

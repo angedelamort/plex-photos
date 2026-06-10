@@ -17,10 +17,10 @@ COPY --from=builder /app/static ./static
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Generic runtime defaults surfaced in DSM Container Manager's Environment form.
-# Everything else (DATA_PATH, THUMB_WIDTH, AUTH_PROVIDER) relies on
-# the app's built-in defaults; first-run Plex setup values (PLEX_SERVER_URL,
-# PLEX_MACHINE_ID, PUBLIC_BASE_URL) and SESSION_SECRET are provided at runtime.
+# Generic runtime defaults. Everything else (DATA_PATH, THUMB_WIDTH,
+# AUTH_PROVIDER) relies on the app's built-in defaults; Plex settings
+# (PLEX_SERVER_URL, PLEX_MACHINE_ID) and SESSION_SECRET are provided at runtime
+# or collected via the first-run setup wizard.
 # PUID/PGID follow the linuxserver.io / arr convention: the container starts as
 # root, the entrypoint chowns /config to PUID:PGID, then drops to that user.
 ENV TZ=America/Toronto \

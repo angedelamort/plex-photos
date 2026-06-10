@@ -1,0 +1,61 @@
+---
+description: Style guide for form controls (inputs, selects, textareas, checkboxes, buttons) in the web UI
+globs: static/**/*.{js,html,css}
+alwaysApply: false
+---
+
+# UI Control Style Guide
+
+All form controls share one canonical style defined in `static/style.css`. Never
+re-implement control styling inline or borrow an unrelated class. Reusing these
+classes is what keeps every screen looking the same.
+
+## Buttons / links
+
+Use `.btn` on `<button>` and `<a>` only. Variants: `.btn.accent`, `.btn.danger`,
+`.btn.sm`, `.btn.icon-btn`.
+
+```js
+el("button", { class: "btn accent", html: `${icon("plus")} Add` });
+```
+
+## Inputs, selects, textareas
+
+Two equivalent ways to get the canonical look — pick one, never style raw:
+
+1. Wrap in a `.field` (preferred in static HTML modals): the inner
+   `<input>/<select>/<textarea>` is styled automatically.
+2. Add the `.control` class directly (preferred for JS-created standalone
+   controls). Add `.sm` for the compact variant.
+
+```js
+// ✅ GOOD — canonical select
+el("select", { class: "control sm" });
+el("input", { class: "control sm", type: "number" });
+
+// ❌ BAD — a select wearing a button class (no caret, no focus ring)
+el("select", { class: "btn sm" });
+
+// ❌ BAD — bare control, inherits no styling
+el("input", { type: "number" });
+```
+
+`.lang-select` is a legacy alias kept only for the topbar language picker; do not
+use it for new controls — use `.control`.
+
+## Checkboxes
+
+Custom checkbox styling applies inside `.field.checkbox` / `.lib-check`, or via
+`.control` on the checkbox itself.
+
+```js
+el("input", { class: "control", type: "checkbox" }); // ✅
+el("input", { type: "checkbox" });                    // ❌ unstyled box
+```
+
+## Rules
+
+- Never put `.btn` on a `<select>`, `<input>`, or `<textarea>`.
+- Never add inline/duplicate CSS for a control that `.control` already covers.
+- If you need a new control variant, extend the canonical `.control` rules in
+  `static/style.css` rather than creating a one-off class.

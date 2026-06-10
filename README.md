@@ -73,43 +73,28 @@ go run .
 
 ## Run with Docker
 
-1. Create a `.env` file (copy from [.env.example](.env.example)):
-
-   ```env
-   PLEX_SERVER_URL=http://<plex-host>:32400
-   PLEX_MACHINE_ID=your-server-machine-id
-   ```
-
-   `SESSION_SECRET` is optional (auto-generated under the data volume on first
-   run). Find the machine ID with `curl -s http://<plex-host>:32400/identity`.
-
-2. Edit [docker-compose.yml](docker-compose.yml) for your setup:
-   - `user: "1026:100"` — set to your `PUID:PGID` (run `id $(whoami)` to find them).
-   - `volumes` — point `:/photos:ro` at your photos folder.
-
-3. Build and start:
-
-   ```bash
-   make run          # builds the image, then docker compose up
-   # or, manually:
-   docker compose up --build
-   ```
-
-The app listens on port `8099` by default — put it behind a reverse proxy
-(nginx / Traefik) for HTTPS.
-
-### Local testing with Docker
-
-Two override files adapt the production compose for local testing (photos are
-mounted from `./testdata/photos`):
+The default [docker-compose.yml](docker-compose.yml) is the **simple local
+stack**: mock auth and the sample photos, no Plex server required.
 
 ```bash
-# Mock auth (no Plex needed) — docker-compose.override.yml is auto-merged:
-docker compose up -d
-
-# Real Plex OAuth — uses .env (PLEX_SERVER_URL / PLEX_MACHINE_ID / PUBLIC_BASE_URL):
-docker compose -f docker-compose.yml -f docker-compose.plex.yml up -d
+docker compose up        # → http://localhost:8099, logged in as a mock admin
+# or:
+make run                 # builds the image first, then `docker compose up`
 ```
+
+To test the real Plex integration, an opt-in override (not auto-merged) layers
+on top, using the `PLEX_*` values from `.env`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.plex.yml up
+```
+
+For production on any Linux/Docker host, the app is deployed as a release
+artifact, not via compose — see
+[Build a release artifact](#build-a-release-artifact). Configure the env vars and
+the `/photos` mount however your host does it (e.g. a NAS UI like Synology DSM
+Container Manager, or a plain `docker run`). The app listens on port `8099` —
+put it behind a reverse proxy (nginx / Traefik) for HTTPS.
 
 ## Build
 
@@ -123,7 +108,10 @@ make build VERSION=1.0.0    # explicit version
 The version is auto-derived from the git tag (`git describe`) and baked into the
 binary via `-ldflags` (also passed to Docker as `--build-arg VERSION`).
 
-### Build a release artifact (e.g. for Synology)
+### Build a release artifact
+
+Produces a self-contained `.tar.gz` of the Docker image (`docker save`), loadable
+on any Docker host with `docker load < plex-photos-<version>.tar.gz`.
 
 ```bash
 git tag v1.0.0
@@ -131,7 +119,8 @@ make release
 # → dist/plex-photos-v1.0.0.tar.gz
 ```
 
-Import the `.tar.gz` in Synology Container Manager → Registry → Add.
+On a NAS, import the `.tar.gz` through its container UI instead — e.g. Synology
+Container Manager → Image → Add → Add from file.
 
 ### Build the binary directly
 

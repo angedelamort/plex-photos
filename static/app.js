@@ -437,7 +437,23 @@ function hero(title, sub, coverPath, actions, bgPath, opts) {
   const backdrop = el("div", { class: "hero-backdrop" });
   const art = bgPath || coverPath;
   if (art) {
-    backdrop.appendChild(el("div", { class: "hero-backdrop-img", style: `background-image:url('${photoURL(art)}')` }));
+    const bgImg = el("div", { class: "hero-backdrop-img", style: `background-image:url('${photoURL(art)}')` });
+    backdrop.appendChild(bgImg);
+    // Size the backdrop to the art's full natural height at the container
+    // width, so the image is shown in full (top-aligned, full width) and
+    // continues below the hero behind the tiles. The hero keeps its own
+    // content-driven height, so the content stays at its original top Y.
+    const probe = new Image();
+    const sizeBackdrop = () => {
+      if (probe.naturalWidth > 0 && node.clientWidth > 0) {
+        const h = node.clientWidth * (probe.naturalHeight / probe.naturalWidth);
+        backdrop.style.height = `${Math.round(h)}px`;
+      }
+    };
+    probe.onload = sizeBackdrop;
+    probe.src = photoURL(art);
+    // Re-measure on resize since the backdrop height depends on container width.
+    window.addEventListener("resize", sizeBackdrop);
   }
   backdrop.appendChild(el("div", { class: "hero-backdrop-fade" }));
   node.appendChild(backdrop);
@@ -1292,7 +1308,7 @@ async function buildAutoScanPanel() {
   }));
 
   const actions = el("div", { class: "lib-actions" });
-  const select = el("select", { class: "btn sm" });
+  const select = el("select", { class: "control sm" });
   const options = [
     [0, t("admin.autoScanOff")],
     [8, t("admin.autoScanEvery", { n: 8 })],
@@ -1351,7 +1367,7 @@ async function buildThumbWorkersPanel() {
 
   const actions = el("div", { class: "lib-actions" });
 
-  const workerSelect = el("select", { class: "btn sm" });
+  const workerSelect = el("select", { class: "control sm" });
   [1, 2, 3, 4, 6, 8].forEach((val) => {
     const opt = el("option", { text: t("admin.thumbWorkersOption", { n: val }) });
     opt.value = String(val);
@@ -1363,7 +1379,7 @@ async function buildThumbWorkersPanel() {
   });
   actions.appendChild(workerSelect);
 
-  const filterSelect = el("select", { class: "btn sm" });
+  const filterSelect = el("select", { class: "control sm" });
   ["lanczos", "catmullrom", "linear", "box", "nearest"].forEach((val) => {
     const opt = el("option", { text: t("admin.thumbFilter." + val) });
     opt.value = val;
@@ -1395,7 +1411,7 @@ async function buildRowLimitPanel() {
   }));
 
   const actions = el("div", { class: "lib-actions" });
-  const select = el("select", { class: "btn sm" });
+  const select = el("select", { class: "control sm" });
   [8, 12, 16, 24, 32, 48].forEach((val) => {
     const opt = el("option", { text: String(val) });
     opt.value = String(val);
@@ -1438,12 +1454,13 @@ async function renderAdmin(main) {
     libs.forEach((lib) => {
       const row = el("div", { class: "lib-row" });
       row.appendChild(el("div", {
-        html: `<div class="lib-name">${esc(lib.name)}</div><div class="lib-path">${esc(lib.rootPath)} &nbsp;·&nbsp; ${esc((lib.whitelist || []).join(", ") || "—")}</div>`,
+        html: `<div class="lib-name">${esc(lib.name)}</div><div class="lib-path">${esc(lib.rootPath)} &nbsp;·&nbsp; ${esc(t("meta.photos", { n: lib.photoCount || 0 }))}</div>`,
       }));
       const actions = el("div", { class: "lib-actions" });
       actions.appendChild(el("span", { class: "pill", text: t("meta.collections", { n: lib.collectionCount }) }));
       actions.appendChild(el("button", { class: "btn sm", html: `${icon("refresh")} ${esc(t("admin.scan"))}`, onclick: (ev) => scanLibrary(lib.id, ev.currentTarget) }));
       actions.appendChild(el("button", { class: "btn sm", title: t("jobs.regenerate"), html: `${icon("refresh")} ${esc(t("jobs.regenerateShort"))}`, onclick: (ev) => regenerateThumbnails(lib.id, ev.currentTarget) }));
+      actions.appendChild(el("button", { class: "btn sm", title: t("jobs.cleanup"), html: `${icon("trash")} ${esc(t("jobs.cleanupShort"))}`, onclick: (ev) => cleanupThumbnails(lib.id, ev.currentTarget) }));
       actions.appendChild(el("button", { class: "btn sm", html: icon("edit"), onclick: () => openLibModal(lib) }));
       actions.appendChild(el("button", { class: "btn sm danger", html: icon("trash"), onclick: () => deleteLibrary(lib) }));
       row.appendChild(actions);
@@ -1456,9 +1473,11 @@ async function renderAdmin(main) {
   settingsHeader.appendChild(el("div", { html: `<div class="section-title">${esc(t("admin.settingsTitle"))}</div><div class="section-sub">${esc(t("admin.settingsSub"))}</div>` }));
   main.appendChild(settingsHeader);
 
-  main.appendChild(await buildAutoScanPanel());
-  main.appendChild(await buildThumbWorkersPanel());
-  main.appendChild(await buildRowLimitPanel());
+  const settingsGroup = el("div", { class: "settings-group" });
+  settingsGroup.appendChild(await buildAutoScanPanel());
+  settingsGroup.appendChild(await buildThumbWorkersPanel());
+  settingsGroup.appendChild(await buildRowLimitPanel());
+  main.appendChild(settingsGroup);
 }
 
 // ── admin: users / library access ──
@@ -1561,6 +1580,11 @@ async function renderJobs(main) {
     html: `${icon("refresh")} ${esc(t("jobs.regenerateAll"))}`,
     onclick: (ev) => regenerateThumbnails(null, ev.currentTarget),
   }));
+  header.appendChild(el("button", {
+    class: "btn",
+    html: `${icon("trash")} ${esc(t("jobs.cleanupAll"))}`,
+    onclick: (ev) => cleanupThumbnails(null, ev.currentTarget),
+  }));
   main.appendChild(header);
 
   const list = el("div", { id: "jobs-list" });
@@ -1601,6 +1625,7 @@ async function refreshJobs(list) {
 function jobTypeLabel(type) {
   if (type === "scan") return t("jobs.typeScan");
   if (type === "thumbnails") return t("jobs.typeThumbnails");
+  if (type === "cleanup") return t("jobs.typeCleanup");
   return type;
 }
 
@@ -1650,6 +1675,22 @@ async function regenerateThumbnails(libId, btn) {
   const url = libId
     ? `/api/admin/libraries/${libId}/regenerate-thumbnails`
     : "/api/admin/jobs/regenerate-thumbnails";
+  if (btn) btn.disabled = true;
+  try {
+    await api(url, { method: "POST" });
+    await navigate({ view: "jobs" });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function cleanupThumbnails(libId, btn) {
+  if (!confirm(t("jobs.cleanupConfirm"))) return;
+  const url = libId
+    ? `/api/admin/libraries/${libId}/cleanup-thumbnails`
+    : "/api/admin/jobs/cleanup-thumbnails";
   if (btn) btn.disabled = true;
   try {
     await api(url, { method: "POST" });
@@ -1733,7 +1774,7 @@ function renderSettings(main) {
     html: `<div class="lib-name">${esc(t("settings.language"))}</div><div class="lib-path">${esc(t("settings.language.desc"))}</div>`,
   }));
 
-  const select = el("select", { class: "lang-select" });
+  const select = el("select", { class: "control sm" });
   [["en", "English"], ["fr", "Français"]].forEach(([val, label]) => {
     select.appendChild(el("option", { value: val, text: label }));
   });
@@ -1763,7 +1804,7 @@ function renderSettings(main) {
     navigate({ view: "settings" });
   };
 
-  const density = el("select", { class: "lang-select" });
+  const density = el("select", { class: "control sm" });
   [["small", t("settings.density.small")], ["medium", t("settings.density.medium")], ["large", t("settings.density.large")]].forEach(([val, label]) => {
     density.appendChild(el("option", { value: val, text: label }));
   });
@@ -1771,7 +1812,7 @@ function renderSettings(main) {
   density.addEventListener("change", () => updatePref("density", density.value));
   generalRow("settings.density", "settings.density.desc", density);
 
-  const sort = el("select", { class: "lang-select" });
+  const sort = el("select", { class: "control sm" });
   [["name", t("settings.sort.name")], ["nameDesc", t("settings.sort.nameDesc")]].forEach(([val, label]) => {
     sort.appendChild(el("option", { value: val, text: label }));
   });
@@ -1812,7 +1853,7 @@ function renderSlideshowSettings(main) {
   };
 
   // Duration per photo: 2s minimum, 3600s (60 min) maximum.
-  const interval = el("input", { type: "number", min: "2", max: "3600", step: "1", value: ssSettings.interval });
+  const interval = el("input", { class: "control sm", type: "number", min: "2", max: "3600", step: "1", value: ssSettings.interval });
   interval.addEventListener("change", () => {
     let v = parseFloat(interval.value) || SS_DEFAULTS.interval;
     v = Math.min(3600, Math.max(2, v));
@@ -1821,7 +1862,7 @@ function renderSlideshowSettings(main) {
   });
   settingRow("ss.duration", "settings.slideshow.duration.desc", interval);
 
-  const transition = el("select", { class: "lang-select" });
+  const transition = el("select", { class: "control sm" });
   [["none", t("ss.transition.none")], ["fade", t("ss.transition.fade")], ["slide", t("ss.transition.slide")]].forEach(([val, label]) => {
     transition.appendChild(el("option", { value: val, text: label }));
   });
@@ -1829,7 +1870,7 @@ function renderSlideshowSettings(main) {
   transition.addEventListener("change", () => updateSetting("transition", transition.value));
   settingRow("ss.transition", "settings.slideshow.transition.desc", transition);
 
-  const fit = el("select", { class: "lang-select" });
+  const fit = el("select", { class: "control sm" });
   [["fit", t("ss.fit.fit")], ["fill", t("ss.fit.fill")], ["scroll", t("ss.fit.scroll")]].forEach(([val, label]) => {
     fit.appendChild(el("option", { value: val, text: label }));
   });
@@ -1838,7 +1879,7 @@ function renderSlideshowSettings(main) {
   settingRow("ss.fit", "settings.slideshow.fit.desc", fit);
 
   const toggle = (key) => {
-    const cb = el("input", { type: "checkbox" });
+    const cb = el("input", { class: "control", type: "checkbox" });
     cb.checked = !!ssSettings[key];
     cb.addEventListener("change", () => updateSetting(key, cb.checked));
     return cb;
@@ -1848,7 +1889,7 @@ function renderSlideshowSettings(main) {
   settingRow("settings.slideshow.shuffle", "settings.slideshow.shuffle.desc", toggle("shuffle"));
   settingRow("settings.slideshow.autostart", "settings.slideshow.autostart.desc", toggle("autostart"));
 
-  const hideDelay = el("input", { type: "number", min: "1", max: "30", step: "1", value: ssSettings.hideDelay });
+  const hideDelay = el("input", { class: "control sm", type: "number", min: "1", max: "30", step: "1", value: ssSettings.hideDelay });
   hideDelay.addEventListener("change", () => {
     const v = parseInt(hideDelay.value, 10) || SS_DEFAULTS.hideDelay;
     hideDelay.value = v;

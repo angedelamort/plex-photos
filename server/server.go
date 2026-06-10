@@ -134,6 +134,8 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/admin/jobs", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListJobs)))
 	mux.Handle("POST /api/admin/jobs/regenerate-thumbnails", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminRegenerateThumbnails)))
 	mux.Handle("POST /api/admin/libraries/{id}/regenerate-thumbnails", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminRegenerateThumbnails)))
+	mux.Handle("POST /api/admin/jobs/cleanup-thumbnails", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminCleanupThumbnails)))
+	mux.Handle("POST /api/admin/libraries/{id}/cleanup-thumbnails", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminCleanupThumbnails)))
 
 	// --- Admin scan error log ---
 	mux.Handle("GET /api/admin/errors", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListScanErrors)))

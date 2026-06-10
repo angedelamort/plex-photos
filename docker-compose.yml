@@ -1,56 +1,24 @@
+# Default stack: simple local run with mock auth and the sample photos.
+#
+#   docker compose up        # → http://localhost:8099, logged in as a mock admin
+#
+# No Plex server needed. To test the real Plex integration instead, see
+# docker-compose.plex.yml. For production, build a release artifact with
+# `make release` and deploy it on any Docker host (see README).
 services:
   plex-photos:
     image: plex-photos:latest
     container_name: plex-photos
-    restart: unless-stopped
-
-    # --- Réseau ---
+    build: .
     ports:
-      - "${PORT:-8099}:${PORT:-8099}"   # HTTP — à mettre derrière un reverse proxy (nginx/Traefik)
-    networks:
-      - media
-
-    # --- Utilisateur & permissions (style linuxserver.io / arr) ---
-    # Le conteneur démarre en root, l'entrypoint chown /config vers PUID:PGID
-    # puis abandonne les privilèges. PUID doit pouvoir LIRE les photos sur le NAS.
-    # Trouver l'UID:GID du propriétaire des fichiers : id $(whoami)
-    # NE PAS définir `user:` ici — l'entrypoint gère la bascule via su-exec.
-
-    # --- Sécurité ---
-    # Le filesystem ne peut pas être read_only : l'entrypoint doit chown /config.
-    # cap_drop ALL / no-new-privileges sont incompatibles avec le chown root → retirés.
-    tmpfs:
-      - /tmp                  # Go a besoin d'un /tmp pour les fichiers temporaires
-
-    # --- Ressources (optionnel, recommandé sur Synology) ---
-    mem_limit: 256m
-    mem_reservation: 64m
-    cpus: "0.5"
-
-    # --- Variables d'environnement ---
+      - "8099:8099"
     environment:
-      PUID: ${PUID:-1026}                  # UID propriétaire des photos NAS (ex: 1026)
-      PGID: ${PGID:-100}                   # GID (ex: users = 100)
-      AUTH_PROVIDER: plex                  # "plex" en prod, "mock" en dev
-      PLEX_SERVER_URL: http://plex:32400   # URL locale du serveur Plex
-      PLEX_MACHINE_ID: ${PLEX_MACHINE_ID}  # Machine ID Plex (dans .env)
-      # Pas de PHOTOS_PATH : la racine de chaque bibliothèque est choisie dans
-      # l'UI admin. Montez simplement les photos (par convention sur /photos).
-      DATA_PATH: /config
-      SESSION_SECRET: ${SESSION_SECRET:-}  # Optionnel : auto-généré dans /config si vide
-      THUMB_WIDTH: 400
-      PORT: ${PORT:-8099}
-      TZ: America/Toronto
-
-    # --- Volumes ---
+      AUTH_PROVIDER: mock
+      MOCK_USER: dev
+      MOCK_ADMIN: "true"
     volumes:
-      - /volume1/photos:/photos:ro         # Dossier photos NAS — read-only strict
-      - plex-photos-data:/config           # SQLite + cache (thumbnails + custom art) — persisté (arr-style /config)
+      - ./testdata/photos:/photos:ro   # sample photos (read-only)
+      - plex-photos-data:/config       # SQLite + thumbnail cache
 
 volumes:
   plex-photos-data:
-    driver: local
-
-networks:
-  media:
-    external: true

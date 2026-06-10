@@ -1,22 +1,16 @@
-# Real Plex OAuth override for local testing.
-# Use explicitly (it is NOT auto-merged like docker-compose.override.yml):
+# Opt-in override to test the real Plex integration locally (not auto-merged).
+# Layers on the default stack but swaps mock auth for Plex SSO, using the
+# PLEX_* values from .env. Photos still come from ./testdata/photos.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.plex.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.plex.yml up
 #
-# Requires PLEX_SERVER_URL and PLEX_MACHINE_ID in .env.
-# SESSION_SECRET is optional (auto-generated under /data on first run).
+# Requires PLEX_SERVER_URL and PLEX_MACHINE_ID in .env. Leave them empty to
+# boot unconfigured and exercise the first-run /setup wizard instead.
 services:
   plex-photos:
-    # Match the image's `nobody` user, which owns /data and /photos.
-    user: "65534:65534"
-    networks: !reset []
     environment:
       AUTH_PROVIDER: plex
-      PLEX_SERVER_URL: ${PLEX_SERVER_URL}
-      PLEX_MACHINE_ID: ${PLEX_MACHINE_ID}
-    volumes:
-      - ./testdata/photos:/photos:ro
-
-networks:
-  media:
-    external: false
+      PLEX_SERVER_URL: ${PLEX_SERVER_URL:-}
+      PLEX_MACHINE_ID: ${PLEX_MACHINE_ID:-}
+      MOCK_USER: ""
+      MOCK_ADMIN: ""

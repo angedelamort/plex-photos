@@ -1,22 +1,24 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Build the plex-photos Docker image and export a DSM-importable .tar.gz.
+  Build the plex-photos Docker image and export a portable .tar.gz.
 
 .DESCRIPTION
   Bakes an internal version into the binary (via -ldflags -X main.version),
   but tags the image only as :latest for now. The real version is still
   observable in the container startup logs ("plex-photos <version> listening").
 
-  Produces a single-arch Docker image (--provenance=false) so Synology DSM
-  Container Manager can import it. The OCI manifest-list images that buildx
-  produces by default fail to import in DSM.
+  Produces a single-arch Docker image (--provenance=false). This keeps the
+  exported image a plain single-manifest tarball, loadable on any Docker host
+  (`docker load`) and importable by NAS container UIs such as Synology DSM
+  Container Manager, which reject the OCI manifest-list images buildx produces
+  by default.
 
 .PARAMETER Version
   Internal version baked into the binary. Defaults to `git describe` or "dev".
 
 .PARAMETER Platform
-  Target architecture. Use linux/arm64 for ARM-based Synology models.
+  Target architecture (e.g. linux/amd64, or linux/arm64 for ARM hosts).
 
 .EXAMPLE
   ./scripts/release.ps1 -Version 0.1.0
@@ -65,5 +67,6 @@ Remove-Item $tarPath
 
 $sizeMB = [math]::Round((Get-Item $gzPath).Length / 1MB, 1)
 Write-Host ""
-Write-Host "Ready for Synology: $gzPath ($sizeMB MB)" -ForegroundColor Green
-Write-Host "Container Manager -> Image -> Add -> Add from file -> select the .tar.gz" -ForegroundColor Green
+Write-Host "Artifact ready: $gzPath ($sizeMB MB)" -ForegroundColor Green
+Write-Host "Load on any Docker host: docker load < $gzPath" -ForegroundColor Green
+Write-Host "On a NAS (e.g. Synology): Container Manager -> Image -> Add -> Add from file" -ForegroundColor Green

@@ -114,6 +114,7 @@ func (s *Store) GetLibrary(id string) (*Library, error) {
 		return nil, err
 	}
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM nodes WHERE library_id = ? AND parent_id IS NULL`, id).Scan(&lib.CollectionCount)
+	_ = s.db.QueryRow(`SELECT COALESCE(SUM(photo_count), 0) FROM nodes WHERE library_id = ?`, id).Scan(&lib.PhotoCount)
 	return &lib, nil
 }
 
@@ -363,6 +364,37 @@ func (s *Store) UpdateNodeMetadata(id string, m NodeMetadata) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ReferencedArtPhotos returns every distinct cover/background photo path
+// referenced by nodes or libraries for the given library. These are real photo
+// tokens (not "@art/" custom uploads) that a thumbnail may have been generated
+// for; the scan cleanup phase treats them as in-use so it never deletes a
+// thumbnail that the DB still points at, even if the photo is not part of the
+// normal listed-photo set (e.g. an admin-set cover on an unusual path).
+func (s *Store) ReferencedArtPhotos(libraryID string) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT cover_photo FROM nodes WHERE library_id = ? AND cover_photo IS NOT NULL AND cover_photo != ''
+		UNION
+		SELECT background_photo FROM nodes WHERE library_id = ? AND background_photo IS NOT NULL AND background_photo != ''
+		UNION
+		SELECT cover_photo FROM libraries WHERE id = ? AND cover_photo IS NOT NULL AND cover_photo != ''
+		UNION
+		SELECT background_photo FROM libraries WHERE id = ? AND background_photo IS NOT NULL AND background_photo != ''`,
+		libraryID, libraryID, libraryID, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // SetNodeCover updates the cover photo (relative path) of a node.
@@ -679,6 +711,7 @@ const (
 const (
 	JobTypeScan      = "scan"
 	JobTypeThumbnail = "thumbnails"
+	JobTypeCleanup   = "cleanup"
 )
 
 // maxJobHistory caps how many finished job rows are retained. Running jobs are

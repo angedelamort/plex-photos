@@ -52,22 +52,6 @@ body {
 .topnav a:hover { color: var(--text); background: rgba(255,255,255,0.05); }
 .topnav a.active { color: var(--text); background: rgba(255,255,255,0.07); }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-.lang-select {
-  background: rgba(255,255,255,0.06); color: var(--text);
-  border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
-  padding: 6px 30px 6px 10px; font-size: 13px; cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
-  -webkit-appearance: none; -moz-appearance: none; appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23b8b8b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center;
-}
-.lang-select:hover { background-color: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); }
-.lang-select:focus {
-  outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim);
-}
-.lang-select option:checked { background: var(--accent-dim); color: var(--accent); }
-.lang-select option { background: #1c1c1c; color: var(--text); }
 .user-menu { position: relative; }
 .user-dropdown {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 200;
@@ -288,27 +272,36 @@ body {
   margin: -26px -28px 24px;
   min-height: 420px;
   display: flex;
-  overflow: hidden;
+  /* Don't clip: the backdrop extends below the hero so the art continues
+     full-width behind the tiles that follow. */
+  overflow: visible;
 }
-/* Full-bleed faded backdrop — covers the entire hero incl. breadcrumb row */
-.hero-backdrop { position: absolute; inset: 0; z-index: 0; }
+/* Full-bleed faded backdrop — top-aligned, full container width, and taller
+   than the hero so the image continues behind the tiles below. Its height is
+   set inline (from JS) to the art's natural height at the container width. */
+.hero-backdrop {
+  position: absolute; top: 0; left: 0; right: 0; z-index: -1;
+  height: 100%;
+  pointer-events: none;
+}
 .hero-backdrop-img {
   position: absolute; inset: 0;
-  /* Cover the full width (and height) of the hero, cropping overflow. This
-     guarantees the backdrop always spans at least the container width. */
-  background-size: cover;
-  background-position: center;
+  /* Match the container width exactly and top-align the art. */
+  background-size: 100% auto;
+  background-position: top center;
   background-repeat: no-repeat;
 }
 .hero-backdrop-fade {
   position: absolute; inset: 0;
-  background:
-    /* Dim the whole image so bright/white art doesn't blow out, plus a
-       stronger fade into the page background at the bottom and edges. */
-    /* Vertical: transparent-ish at top, fading into the page bg at the bottom (Plex-style). */
-    linear-gradient(0deg, var(--bg) 0%, rgba(20,20,20,0.6) 40%, rgba(20,20,20,0.35) 100%),
-    /* Horizontal: darken the left/right edges so the art blends into the layout. */
-    linear-gradient(90deg, rgba(20,20,20,0.5) 0%, rgba(20,20,20,0.15) 30%, rgba(20,20,20,0.15) 70%, rgba(20,20,20,0.5) 100%);
+  /* Even dim so bright art doesn't blow out and overlaid text stays legible. */
+  background: rgba(0,0,0,0.75);
+}
+/* Smooth, fixed-height blend at the very bottom of the image into the page bg,
+   so the fade looks consistent regardless of how tall the art is. */
+.hero-backdrop-fade::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 240px;
+  background: linear-gradient(0deg, var(--bg) 0%, rgba(0,0,0,0.45) 45%, transparent 100%);
 }
 
 /* Breadcrumb overlaid at the top of the backdrop */
@@ -551,30 +544,36 @@ body {
 .viewer {
   position: fixed; inset: 0; background: rgba(8,8,8,0.97); z-index: 100;
   display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
 }
 /* Pure opaque black behind a running slideshow. */
 .viewer.slideshow-running { background: #000; }
+/* Never let the image exceed the viewport, so controls stay reachable. */
 .viewer-img { max-width: 90vw; max-height: 82vh; object-fit: contain; border-radius: 4px; }
 .viewer-close {
-  position: absolute; top: 18px; right: 20px;
-  background: rgba(255,255,255,0.06); border: none; color: var(--text);
+  position: absolute; top: 18px; right: 20px; z-index: 10;
+  background: rgba(0,0,0,0.55); border: 0.5px solid rgba(255,255,255,0.18);
+  color: #fff; backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.45);
   width: 38px; height: 38px; border-radius: 8px; cursor: pointer; font-size: 20px;
   display: flex; align-items: center; justify-content: center;
   transition: opacity 0.5s ease, background 0.15s;
 }
-.viewer-close:hover { background: rgba(255,255,255,0.12); }
+.viewer-close:hover { background: rgba(0,0,0,0.75); }
 .viewer-nav {
-  position: absolute; top: 50%; transform: translateY(-50%);
-  background: rgba(255,255,255,0.06); border: none; color: var(--text);
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 10;
+  background: rgba(0,0,0,0.55); border: 0.5px solid rgba(255,255,255,0.18);
+  color: #fff; backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.45);
   width: 44px; height: 64px; border-radius: 8px; cursor: pointer; font-size: 24px;
   display: flex; align-items: center; justify-content: center;
   transition: opacity 0.5s ease, background 0.15s;
 }
-.viewer-nav:hover { background: rgba(255,255,255,0.12); }
+.viewer-nav:hover { background: rgba(0,0,0,0.75); }
 .viewer-prev { left: 20px; }
 .viewer-next { right: 20px; }
 .viewer-toolbar {
-  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 10;
   display: flex; align-items: center; gap: 12px;
   background: rgba(20,20,20,0.85); padding: 8px 14px; border-radius: 10px;
   border: 0.5px solid var(--border);
@@ -669,62 +668,95 @@ body {
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 18px; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field span { font-size: 12px; color: var(--text-muted); }
-.field input {
-  background: var(--bg); border: 0.5px solid var(--border-hover);
-  border-radius: var(--radius); padding: 9px 11px; color: var(--text);
-  font-family: inherit; font-size: 13px;
-  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+
+/* ── FORM CONTROLS (canonical) ────────────────────────────────────────────
+   Single source of truth for text inputs, textareas and selects. Use the
+   public `.control` class on any standalone <input>/<select>/<textarea>, or
+   wrap controls in a `.field` / `.lib-check` and they inherit the same look.
+   `.lang-select` is a legacy alias kept for backward-compat; prefer `.control`.
+   NEVER style a <select>/<input> with `.btn` — that is for <button>/<a> only.
+   Add `.sm` for a compact variant. */
+.control,
+.field input,
+.field textarea,
+.field select,
+select.lang-select {
+  background-color: var(--bg); color: var(--text);
+  border: 0.5px solid var(--border-hover); border-radius: var(--radius);
+  padding: 9px 11px; font-family: inherit; font-size: 13px;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
 }
-.field input::placeholder { color: var(--text-hint); }
-.field input:hover { border-color: rgba(255,255,255,0.22); }
-.field input:focus {
-  outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim);
-}
-.field textarea {
-  background: var(--bg); border: 0.5px solid var(--border-hover);
-  border-radius: var(--radius); padding: 9px 11px; color: var(--text);
-  font-family: inherit; font-size: 13px; resize: vertical;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
+.control::placeholder,
+.field input::placeholder,
 .field textarea::placeholder { color: var(--text-hint); }
-.field textarea:hover { border-color: rgba(255,255,255,0.22); }
-.field textarea:focus {
+.control:hover,
+.field input:hover,
+.field textarea:hover,
+.field select:hover,
+select.lang-select:hover { border-color: rgba(255,255,255,0.22); }
+.control:focus,
+.field input:focus,
+.field textarea:focus,
+.field select:focus,
+select.lang-select:focus {
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
+.control.sm,
+select.lang-select.sm { padding: 5px 10px; font-size: 12px; }
+select.control.sm,
+select.lang-select.sm { padding-right: 28px; }
+
+textarea.control,
+.field textarea { resize: vertical; }
+
+.control[readonly],
 .field input[readonly] { color: var(--text-muted); cursor: default; }
+.control[readonly]:hover,
 .field input[readonly]:hover { border-color: var(--border-hover); }
 
 /* Number inputs: hide the default spinner, the value is set via stepper anyway */
+.control[type="number"],
 .field input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+.control[type="number"]::-webkit-outer-spin-button,
+.control[type="number"]::-webkit-inner-spin-button,
 .field input[type="number"]::-webkit-outer-spin-button,
 .field input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none; margin: 0;
 }
 .field-row .field { flex: 1; margin-bottom: 0; }
-.field select {
-  background-color: var(--bg); border: 0.5px solid var(--border-hover);
-  border-radius: var(--radius); padding: 9px 32px 9px 11px; color: var(--text);
-  font-family: inherit; font-size: 13px; cursor: pointer;
+
+/* Selects: native chevron removed, replaced with our SVG caret. */
+select.control,
+.field select,
+select.lang-select {
+  cursor: pointer; padding-right: 32px;
   -webkit-appearance: none; -moz-appearance: none; appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23b8b8b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 11px center;
-  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
 }
-.field select:hover { border-color: rgba(255,255,255,0.22); }
-.field select:focus {
-  outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim);
+select.control:focus,
+.field select:focus,
+select.lang-select:focus {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%230fb884' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 }
-.field select option { background: #1c1c1c; color: var(--text); padding: 8px; }
-.field select option:checked { background: var(--accent-dim); color: var(--accent); }
+select.control.sm,
+select.lang-select.sm { background-position: right 9px center; }
+select.control option,
+.field select option,
+select.lang-select option { background: #1c1c1c; color: var(--text); padding: 8px; }
+select.control option:checked,
+.field select option:checked,
+select.lang-select option:checked { background: var(--accent-dim); color: var(--accent); }
+
 .field.checkbox { flex-direction: row; align-items: center; gap: 9px; cursor: pointer; user-select: none; }
 
-/* ── CUSTOM CHECKBOX ── */
+/* ── CUSTOM CHECKBOX ──
+   The custom box applies to checkboxes inside a `.field.checkbox` or
+   `.lib-check`, or to any checkbox carrying the `.control` class. */
 .field.checkbox input[type="checkbox"],
-.lib-check input[type="checkbox"] {
+.lib-check input[type="checkbox"],
+input.control[type="checkbox"] {
   appearance: none; -webkit-appearance: none; -moz-appearance: none;
   width: 18px; height: 18px; flex-shrink: 0; margin: 0;
   border: 1.5px solid var(--border-hover); border-radius: 5px;
@@ -732,19 +764,23 @@ body {
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
 }
 .field.checkbox input[type="checkbox"]:hover,
-.lib-check input[type="checkbox"]:hover { border-color: var(--accent); }
+.lib-check input[type="checkbox"]:hover,
+input.control[type="checkbox"]:hover { border-color: var(--accent); }
 .field.checkbox input[type="checkbox"]:checked,
-.lib-check input[type="checkbox"]:checked {
+.lib-check input[type="checkbox"]:checked,
+input.control[type="checkbox"]:checked {
   background: var(--accent); border-color: var(--accent);
 }
 .field.checkbox input[type="checkbox"]:checked::after,
-.lib-check input[type="checkbox"]:checked::after {
+.lib-check input[type="checkbox"]:checked::after,
+input.control[type="checkbox"]:checked::after {
   content: ""; position: absolute; left: 5px; top: 1.5px;
   width: 5px; height: 9px; border: solid #0a2b20;
   border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 .field.checkbox input[type="checkbox"]:focus-visible,
-.lib-check input[type="checkbox"]:focus-visible {
+.lib-check input[type="checkbox"]:focus-visible,
+input.control[type="checkbox"]:focus-visible {
   outline: none; box-shadow: 0 0 0 3px var(--accent-dim);
 }
 

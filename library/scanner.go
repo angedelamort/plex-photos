@@ -53,7 +53,10 @@ type ScanProgress struct {
 	CurrentDir string `json:"currentDir"`
 	ThumbTotal int    `json:"thumbTotal"`
 	ThumbDone  int    `json:"thumbDone"`
-	Error      string `json:"error,omitempty"`
+	// Cleanup phase: removal of orphaned cached thumbnails (no source photo).
+	CleanupTotal int    `json:"cleanupTotal"`
+	CleanupDone  int    `json:"cleanupDone"`
+	Error        string `json:"error,omitempty"`
 }
 
 // NewScanner builds a scanner. Photo paths are derived from each library's own
@@ -247,6 +250,10 @@ func (sc *Scanner) scan(lib *Library) error {
 // photo in the library so the gallery renders instantly after a scan. Work is
 // spread across a small worker pool; failures on individual images are logged
 // but do not abort the phase. Progress is reported via ThumbTotal/ThumbDone.
+//
+// Generation only ADDS missing thumbnails; it never deletes. Removing orphaned
+// thumbnails is a deliberately separate operation (CleanupThumbnails) so a scan
+// is never destructive.
 func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 	albumDirs, err := findAlbumDirs(lib.RootPath)
 	if err != nil {
@@ -284,6 +291,15 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 		workers = 1
 	}
 
+	// Snapshot the cache directory once so each worker can check for an existing
+	// thumbnail with a map lookup instead of an os.Stat per photo. This is the
+	// dominant speedup when re-scanning an already-warmed library.
+	cacheIdx, err := sc.thumbs.BuildCacheIndex()
+	if err != nil {
+		log.Printf("thumbnail phase: build cache index for %s: %v", lib.ID, err)
+		cacheIdx = nil
+	}
+
 	var doneMu sync.Mutex
 	done := 0
 	jobs := make(chan string)
@@ -293,7 +309,7 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 		go func() {
 			defer wg.Done()
 			for rel := range jobs {
-				if _, err := sc.thumbs.Ensure(rel); err != nil {
+				if _, err := sc.thumbs.EnsureIndexed(rel, cacheIdx); err != nil {
 					log.Printf("thumbnail %q: %v", rel, err)
 				}
 				sc.updateProgress(lib.ID, func(p *ScanProgress) { p.ThumbDone++ })
@@ -312,6 +328,116 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// CleanupThumbnails removes cached thumbnails that no longer correspond to a
+// source photo in the library, reporting progress to the given job. It is a
+// standalone, read-then-delete operation kept entirely separate from scanning
+// and generation: scanning only adds missing thumbnails, while this is the only
+// path that deletes. Safe to run independently from the admin UI.
+func (sc *Scanner) CleanupThumbnails(lib *Library, jp *JobProgress) error {
+	if sc.thumbs == nil {
+		return fmt.Errorf("thumbnailer not configured")
+	}
+
+	albumDirs, err := findAlbumDirs(lib.RootPath)
+	if err != nil {
+		return fmt.Errorf("list albums: %w", err)
+	}
+	var rels []string
+	for _, dir := range albumDirs {
+		photos, err := sc.ListPhotos(dir)
+		if err != nil {
+			continue
+		}
+		for _, p := range photos {
+			rels = append(rels, p.Path)
+		}
+	}
+
+	cacheIdx, err := sc.thumbs.BuildCacheIndex()
+	if err != nil {
+		return fmt.Errorf("build cache index: %w", err)
+	}
+
+	sc.cleanupOrphanThumbs(lib, rels, cacheIdx, jp)
+	return nil
+}
+
+// cleanupOrphanThumbs deletes cached thumbnails that no longer correspond to a
+// source photo. It diffs the pre-built cache index against the set of thumbnail
+// paths expected from the current photo list (rels); anything in the cache but
+// not expected is an orphan (its source photo was deleted/moved) and is
+// removed. Failures are logged but do not abort the pass. If the cache index
+// was unavailable, cleanup is skipped (we cannot safely enumerate orphans).
+func (sc *Scanner) cleanupOrphanThumbs(lib *Library, rels []string, cacheIdx CacheIndex, jp *JobProgress) {
+	if cacheIdx == nil {
+		return
+	}
+
+	expected := make(map[string]struct{}, len(rels))
+	for _, rel := range rels {
+		expected[sc.thumbs.CachePathFor(rel)] = struct{}{}
+	}
+
+	// Also protect thumbnails for any cover/background photo still referenced by
+	// the DB. Auto-derived covers are already in rels, but an admin-set cover may
+	// point at a photo outside the normal listed-photo set; we must not delete
+	// its thumbnail while the DB still references it. "@art/" uploads live in a
+	// separate cache dir and never have a thumb here, so they are skipped.
+	if sc.store != nil {
+		refs, err := sc.store.ReferencedArtPhotos(lib.ID)
+		if err != nil {
+			log.Printf("cleanup: list referenced art for %s: %v", lib.ID, err)
+		}
+		for _, ref := range refs {
+			if IsArtPath(ref) {
+				continue
+			}
+			expected[sc.thumbs.CachePathFor(ref)] = struct{}{}
+		}
+	}
+
+	// The thumbnail cache is a single root shared by every library (it mirrors
+	// absolute source paths). Restrict orphan deletion to cache entries that live
+	// under THIS library's cache subtree, so we never touch another library's
+	// thumbnails. The prefix is derived from the library root the same way a real
+	// thumbnail path is, then truncated to the directory portion.
+	libPrefix := sc.thumbs.CacheDirFor(lib.RootPath)
+
+	var orphans []string
+	for dst := range cacheIdx {
+		if !strings.HasPrefix(dst, libPrefix) {
+			continue
+		}
+		if _, ok := expected[dst]; !ok {
+			orphans = append(orphans, dst)
+		}
+	}
+
+	total := len(orphans)
+	sc.updateProgress(lib.ID, func(p *ScanProgress) {
+		p.Phase = "cleanup"
+		p.CleanupTotal = total
+		p.CleanupDone = 0
+		p.CurrentDir = ""
+	})
+	if jp != nil {
+		jp.SetPhase("cleanup", total)
+	}
+	if total == 0 {
+		return
+	}
+
+	for i, dst := range orphans {
+		if err := sc.thumbs.RemoveThumb(dst); err != nil {
+			log.Printf("cleanup orphan thumb %q: %v", dst, err)
+		}
+		sc.updateProgress(lib.ID, func(p *ScanProgress) { p.CleanupDone++ })
+		if jp != nil {
+			jp.SetProgress(i+1, total)
+		}
+	}
 }
 
 // RegenerateThumbnails forces regeneration of every thumbnail in a library

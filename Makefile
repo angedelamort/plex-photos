@@ -16,7 +16,7 @@ build:
 		.
 	@echo "Image: $(IMAGE)"
 
-## Lance l'app en local pour tester
+## Lance l'app en local pour tester (auth mock, photos d'exemple)
 run: build
 	docker compose up
 
@@ -28,13 +28,14 @@ dev:
 	PORT=8099 \
 	go run .
 
-## Build + exporte un .tar.gz prêt pour Synology
+## Build + exporte un .tar.gz de l'image (chargeable sur tout hôte Docker)
 release: build
 	mkdir -p $(OUT_DIR)
 	docker save $(IMAGE) $(LATEST) | gzip > $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz
 	@echo ""
-	@echo "Prêt pour Synology : $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz"
-	@echo "Container Manager → Registry → Ajouter → sélectionner le fichier"
+	@echo "Artefact prêt : $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz"
+	@echo "Charger avec : docker load < $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz"
+	@echo "Sur NAS (ex. Synology) : Container Manager → Image → Ajouter → depuis fichier"
 
 ## Nettoie les images et le dossier dist
 clean:

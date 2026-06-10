@@ -10,8 +10,9 @@ type Library struct {
 	CreatedAt time.Time  `json:"createdAt"`
 	LastScan  *time.Time `json:"lastScan,omitempty"`
 	Whitelist []string   `json:"whitelist"`
-	// CollectionCount is populated for list views.
+	// CollectionCount and PhotoCount are populated for list views.
 	CollectionCount int    `json:"collectionCount"`
+	PhotoCount      int    `json:"photoCount"`
 	CoverPhoto      string `json:"coverPhoto,omitempty"`
 	BackgroundPhoto string `json:"backgroundPhoto,omitempty"`
 	// User-editable metadata.

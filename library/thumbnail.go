@@ -97,6 +97,32 @@ func (t *Thumbnailer) cachePath(srcFull string) string {
 	return filepath.Join(t.cacheRoot, filepath.FromSlash(key)+".thumb.jpg")
 }
 
+// CachePathFor returns the absolute thumbnail cache path for a photo URL token,
+// without generating anything. Used by the scan cleanup phase to compute the
+// set of thumbnails that legitimately correspond to a source photo.
+func (t *Thumbnailer) CachePathFor(token string) string {
+	return t.cachePath(URLPathToAbs(token))
+}
+
+// CacheDirFor returns the cache directory prefix (with a trailing separator)
+// under which all thumbnails for the given absolute source directory live. It
+// applies the same path transform as cachePath so it can be used to scope cache
+// operations (e.g. orphan cleanup) to a single library's subtree without
+// affecting thumbnails from other libraries that share the global cache root.
+func (t *Thumbnailer) CacheDirFor(srcDir string) string {
+	key := strings.ReplaceAll(AbsToURLPath(srcDir), ":", "_")
+	return filepath.Join(t.cacheRoot, filepath.FromSlash(key)) + string(filepath.Separator)
+}
+
+// RemoveThumb deletes a single cached thumbnail file. Missing files are not an
+// error so cleanup is idempotent.
+func (t *Thumbnailer) RemoveThumb(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // pathLock serializes generation per output path to avoid duplicate work/races.
 func (t *Thumbnailer) pathLock(key string) *sync.Mutex {
 	t.mu.Lock()
@@ -141,6 +167,71 @@ func (t *Thumbnailer) ThumbPath(token string) (string, error) {
 		return "", err
 	}
 	return dstFull, nil
+}
+
+// CacheIndex is an in-memory snapshot of the thumbnail cache directory mapping
+// absolute thumbnail paths to their modification time. It lets the scan phase
+// decide whether a thumbnail already exists with a single map lookup instead of
+// an os.Stat syscall per photo, which is the dominant cost when most thumbnails
+// already exist (e.g. a re-scan of a large, already-warmed library).
+type CacheIndex map[string]int64
+
+// BuildCacheIndex walks the cache root once and records every existing
+// (non-empty) thumbnail file with its modtime. A single sequential tree walk is
+// far cheaper than ~N random stat calls on a NAS/spinning disk. If the cache
+// root does not exist yet, an empty index is returned.
+func (t *Thumbnailer) BuildCacheIndex() (CacheIndex, error) {
+	idx := CacheIndex{}
+	err := filepath.WalkDir(t.cacheRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".thumb.jpg") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() == 0 {
+			return nil
+		}
+		idx[path] = info.ModTime().UnixNano()
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return idx, err
+	}
+	return idx, nil
+}
+
+// EnsureIndexed is like Ensure but consults a pre-built CacheIndex to avoid a
+// per-photo stat of the thumbnail file. It still stats the source (needed to
+// detect a source newer than its thumbnail) but skips the second syscall and
+// the per-path lock map growth for thumbnails that are already fresh.
+func (t *Thumbnailer) EnsureIndexed(token string, idx CacheIndex) (bool, error) {
+	srcFull := URLPathToAbs(token)
+	if !IsImage(srcFull) {
+		return false, fmt.Errorf("not an image: %s", token)
+	}
+	srcInfo, err := os.Stat(srcFull)
+	if err != nil {
+		return false, err
+	}
+	dstFull := t.cachePath(srcFull)
+	if mod, ok := idx[dstFull]; ok && mod >= srcInfo.ModTime().UnixNano() {
+		return false, nil
+	}
+	lock := t.pathLock(dstFull)
+	lock.Lock()
+	defer lock.Unlock()
+	if thumbFresh(dstFull, srcInfo) {
+		return false, nil
+	}
+	if err := t.generate(srcFull, dstFull); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Ensure generates (if missing/stale) the thumbnail for the given photo URL
