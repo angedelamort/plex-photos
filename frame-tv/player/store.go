@@ -30,6 +30,9 @@ type TV struct {
 	DisplayMode string `json:"displayMode"`
 	BgColor     string `json:"bgColor"`
 	BorderPct   int    `json:"borderPct"`
+	// SmartFill crops landscape photos to fill the whole panel (no bars / no
+	// matte) on top of DisplayMode; portrait photos keep DisplayMode's behavior.
+	SmartFill bool `json:"smartFill"`
 	// CaptionFields lists the metadata snippets to overlay (e.g. "date", "gps").
 	// Empty means no caption. Persisted as a comma-separated string.
 	CaptionFields []string `json:"captionFields"`
@@ -75,7 +78,7 @@ func scanTV(sc interface{ Scan(...any) error }) (*TV, error) {
 	var t TV
 	var caption string
 	if err := sc.Scan(&t.ID, &t.Name, &t.IP, &t.Token, &t.Matte, &t.IntervalS,
-		&t.DisplayMode, &t.BgColor, &t.BorderPct, &caption, &t.PlayOrder, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.DisplayMode, &t.BgColor, &t.BorderPct, &t.SmartFill, &caption, &t.PlayOrder, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.CaptionFields = splitFields(caption)
@@ -83,7 +86,7 @@ func scanTV(sc interface{ Scan(...any) error }) (*TV, error) {
 	return &t, nil
 }
 
-const tvColumns = `id, name, ip, token, matte, interval_s, display_mode, bg_color, border_pct, caption_fields, play_order, created_at, updated_at`
+const tvColumns = `id, name, ip, token, matte, interval_s, display_mode, bg_color, border_pct, smart_fill, caption_fields, play_order, created_at, updated_at`
 
 // splitFields parses a comma-separated field list into a clean slice.
 func splitFields(s string) []string {
@@ -141,10 +144,10 @@ func (s *Store) Get(id string) (*TV, error) {
 func (s *Store) Create(tv TV) (*TV, error) {
 	id := uuid.NewString()
 	if _, err := s.db.Exec(
-		`INSERT INTO tvs (id, name, ip, matte, interval_s, display_mode, bg_color, border_pct, caption_fields, play_order)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tvs (id, name, ip, matte, interval_s, display_mode, bg_color, border_pct, smart_fill, caption_fields, play_order)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, tv.Name, tv.IP, tv.Matte, tv.IntervalS, tv.DisplayMode, tv.BgColor, tv.BorderPct,
-		joinFields(tv.CaptionFields), tv.PlayOrder); err != nil {
+		tv.SmartFill, joinFields(tv.CaptionFields), tv.PlayOrder); err != nil {
 		return nil, err
 	}
 	return s.Get(id)
@@ -154,10 +157,10 @@ func (s *Store) Create(tv TV) (*TV, error) {
 func (s *Store) Update(id string, tv TV) (*TV, error) {
 	res, err := s.db.Exec(`
 		UPDATE tvs SET name = ?, ip = ?, matte = ?, interval_s = ?,
-		    display_mode = ?, bg_color = ?, border_pct = ?, caption_fields = ?, play_order = ?, updated_at = CURRENT_TIMESTAMP
+		    display_mode = ?, bg_color = ?, border_pct = ?, smart_fill = ?, caption_fields = ?, play_order = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
 		tv.Name, tv.IP, tv.Matte, tv.IntervalS, tv.DisplayMode, tv.BgColor, tv.BorderPct,
-		joinFields(tv.CaptionFields), tv.PlayOrder, id)
+		tv.SmartFill, joinFields(tv.CaptionFields), tv.PlayOrder, id)
 	if err != nil {
 		return nil, err
 	}

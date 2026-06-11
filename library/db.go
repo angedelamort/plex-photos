@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS tvs (
   display_mode TEXT NOT NULL DEFAULT 'blur-fill',
   bg_color     TEXT NOT NULL DEFAULT '#000000',
   border_pct   INTEGER NOT NULL DEFAULT 0,
+  smart_fill   INTEGER NOT NULL DEFAULT 0,
   caption_fields TEXT NOT NULL DEFAULT '',
   play_order   TEXT NOT NULL DEFAULT 'sequential',
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -150,6 +151,37 @@ CREATE TABLE IF NOT EXISTS tv_player_state (
   last_swap_at    DATETIME,
   deck            TEXT NOT NULL DEFAULT '',
   updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-photo metadata extracted at scan time from EXIF and Google Takeout
+-- sidecar JSON. photo_path is the same URL token used for thumb/photo requests
+-- (see AbsToURLPath). file_mtime/file_size let a rescan skip unchanged files.
+-- Multi-valued person tags live in photo_people. orientation is derived from
+-- width/height ("portrait" | "landscape" | "square").
+CREATE TABLE IF NOT EXISTS photo_meta (
+  photo_path    TEXT PRIMARY KEY,
+  library_id    TEXT REFERENCES libraries(id) ON DELETE CASCADE,
+  taken_at      DATETIME,
+  year          INTEGER,
+  lat           REAL,
+  lon           REAL,
+  has_gps       INTEGER NOT NULL DEFAULT 0,
+  place_city    TEXT,
+  place_country TEXT,
+  width         INTEGER,
+  height        INTEGER,
+  orientation   TEXT,
+  has_sidecar   INTEGER NOT NULL DEFAULT 0,
+  file_mtime    INTEGER,
+  file_size     INTEGER,
+  indexed_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Person tags for a photo (Google Takeout people[].name). One row per name.
+CREATE TABLE IF NOT EXISTS photo_people (
+  photo_path TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  PRIMARY KEY (photo_path, name)
 );
 
 -- Global app settings as simple key/value rows (e.g. auto-scan interval).
@@ -194,6 +226,9 @@ CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_access_library ON library_access(library_id);
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON album_favorites(plex_username);
 CREATE INDEX IF NOT EXISTS idx_views_user ON album_views(plex_username, viewed_at);
+CREATE INDEX IF NOT EXISTS idx_photo_meta_year_place ON photo_meta(year, place_country, place_city);
+CREATE INDEX IF NOT EXISTS idx_photo_meta_lib ON photo_meta(library_id);
+CREATE INDEX IF NOT EXISTS idx_photo_people_name ON photo_people(name);
 `
 
 // OpenDB opens (and creates if needed) the SQLite database at dataPath/plex-photos.db,
@@ -260,6 +295,7 @@ func migrate(db *sql.DB) error {
 		{"tvs", "display_mode", `ALTER TABLE tvs ADD COLUMN display_mode TEXT NOT NULL DEFAULT 'blur-fill'`},
 		{"tvs", "bg_color", `ALTER TABLE tvs ADD COLUMN bg_color TEXT NOT NULL DEFAULT '#000000'`},
 		{"tvs", "border_pct", `ALTER TABLE tvs ADD COLUMN border_pct INTEGER NOT NULL DEFAULT 0`},
+		{"tvs", "smart_fill", `ALTER TABLE tvs ADD COLUMN smart_fill INTEGER NOT NULL DEFAULT 0`},
 		{"tvs", "caption_fields", `ALTER TABLE tvs ADD COLUMN caption_fields TEXT NOT NULL DEFAULT ''`},
 		{"tvs", "play_order", `ALTER TABLE tvs ADD COLUMN play_order TEXT NOT NULL DEFAULT 'sequential'`},
 		{"tv_player_state", "deck", `ALTER TABLE tv_player_state ADD COLUMN deck TEXT NOT NULL DEFAULT ''`},

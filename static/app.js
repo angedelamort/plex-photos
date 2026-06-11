@@ -444,7 +444,7 @@ async function renderLibrary(main, libraryId) {
   main.innerHTML = "";
 
   const cover = lib?.coverPhoto || nodes.find((c) => c.coverPhoto)?.coverPhoto || "";
-  const totalPhotos = nodes.reduce((n, c) => n + (c.photoCount || 0), 0);
+  const totalPhotos = nodes.reduce((n, c) => n + (c.totalPhotoCount != null ? c.totalPhotoCount : (c.photoCount || 0)), 0);
   const actions = [];
   if (totalPhotos > 0 || nodes.length > 0) {
     actions.push(el("button", {
@@ -1073,6 +1073,7 @@ function openTVModal(tv) {
   $("#tv-matte").value = (tv && tv.matte) ? tv.matte : "none";
   $("#tv-bg-color").value = (tv && tv.bgColor) ? tv.bgColor : "#000000";
   $("#tv-border").value = tv ? (tv.borderPct || 0) : 0;
+  $("#tv-smart-fill").checked = !!(tv && tv.smartFill);
   populateIntervalSelect($("#tv-interval"));
   $("#tv-interval").value = String(tv && tv.intervalSeconds ? nearestInterval(tv.intervalSeconds) : DEFAULT_INTERVAL);
   $("#tv-play-order").value = (tv && tv.playOrder === "random") ? "random" : "sequential";
@@ -1094,6 +1095,7 @@ async function saveTV() {
     displayMode: $("#tv-display-mode").value,
     bgColor: $("#tv-bg-color").value,
     borderPct: Math.max(0, Math.min(40, parseInt($("#tv-border").value, 10) || 0)),
+    smartFill: $("#tv-smart-fill").checked,
     captionFields: CAPTION_FIELDS.filter((k) => { const cb = $("#tv-cap-" + k); return cb && cb.checked; }),
     intervalSeconds: parseInt($("#tv-interval").value, 10) || DEFAULT_INTERVAL,
     playOrder: $("#tv-play-order").value === "random" ? "random" : "sequential",
@@ -1313,10 +1315,14 @@ function nodeCard(libraryId, n, opts = {}) {
     : "";
   const parentHtml = opts.parent ? `<div class="card-parent">${esc(opts.parent)}</div>` : "";
 
-  // Counts line: show sub-collection and/or photo counts as applicable.
+  // Counts line: show sub-collection and/or photo counts as applicable. Use the
+  // recursive total so a collection that only holds sub-folders still shows how
+  // many photos live beneath it instead of a misleading "0 photos". Empty
+  // collections drop the photos line entirely.
+  const totalPhotos = n.totalPhotoCount != null ? n.totalPhotoCount : (n.photoCount || 0);
   const counts = [];
   if (n.hasChildren || (n.childCount || 0) > 0) counts.push(`<span>${esc(t("card.collectionCount", { n: n.childCount || 0 }))}</span>`);
-  counts.push(`<span>${esc(t("meta.photos", { n: n.photoCount || 0 }))}</span>`);
+  if (totalPhotos > 0 || isAlbum) counts.push(`<span>${esc(t("meta.photos", { n: totalPhotos }))}</span>`);
 
   const card = el("div", {
     class: "card " + (opts.poster ? "card--poster" : "card--landscape"),
@@ -1491,7 +1497,7 @@ async function renderNode(main, route) {
   const meta = [];
   if (childCollections.length > 0) meta.push(t("meta.collections", { n: childCollections.length }));
   if (childAlbums.length > 0) meta.push(t("meta.albums", { n: childAlbums.length }));
-  meta.push(t("meta.photos", { n: photos.length }));
+  meta.push(t("meta.photos", { n: node.totalPhotoCount != null ? node.totalPhotoCount : photos.length }));
   if (node.year) meta.push(node.year);
   if (node.contentRating) meta.push(node.contentRating);
   if (node.studio) meta.push(node.studio);
@@ -3115,7 +3121,7 @@ document.addEventListener("keydown", (e) => {
         : el("div", { class: "search-result-thumb placeholder", html: icon("layout-grid") });
       const sub = node.childCount > 0
         ? t("search.collection", { n: node.childCount })
-        : t("search.album", { n: node.photoCount || 0 });
+        : t("search.album", { n: node.totalPhotoCount != null ? node.totalPhotoCount : (node.photoCount || 0) });
       const item = el("div", {
         class: "search-result-item" + (i === activeIdx ? " active" : ""),
         "data-idx": i,

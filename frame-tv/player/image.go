@@ -47,45 +47,67 @@ type DisplayOptions struct {
 	Mode      string
 	BgColor   string // #rrggbb, used by fit-color
 	BorderPct int    // 0..40, margin as % of panel height (fit-color)
+	// SmartFill, when set, crops landscape photos to fill the whole panel (no
+	// bars, no TV matte) regardless of Mode. Portrait/square photos are left to
+	// Mode, since cropping them to 16:9 would discard most of the image.
+	SmartFill bool
 	// Caption is the optional metadata overlay (one entry per line). Corner
 	// selects which corner it is anchored to.
 	Caption       []string
 	CaptionCorner int
 }
 
+// composed is the result of preparing a photo for the panel. FullPanel reports
+// whether the output already fills the entire panel, in which case the TV must
+// not draw a matte around it.
+type composed struct {
+	JPEG      []byte
+	FullPanel bool
+}
+
 // blurSigma controls how soft the blur-fill background is. Tuned for 4K.
 const blurSigma = 28.0
 
 // prepareJPEG decodes a source image and composes it for the panel according to
-// opt, returning JPEG bytes ready to upload. tv-matte returns the fitted image
-// untouched (the TV frames it); the other modes return a full-panel canvas.
-func prepareJPEG(src []byte, opt DisplayOptions) ([]byte, error) {
+// opt. tv-matte returns the fitted image untouched (the TV frames it) and
+// reports FullPanel=false; the other modes — and any photo handled by SmartFill
+// — return a full-panel canvas with FullPanel=true.
+func prepareJPEG(src []byte, opt DisplayOptions) (composed, error) {
 	if len(src) == 0 {
-		return nil, fmt.Errorf("empty image")
+		return composed{}, fmt.Errorf("empty image")
 	}
 	if len(src) > maxDecode {
-		return nil, fmt.Errorf("image too large (%d bytes)", len(src))
+		return composed{}, fmt.Errorf("image too large (%d bytes)", len(src))
 	}
 
 	img, err := imaging.Decode(bytes.NewReader(src), imaging.AutoOrientation(true))
 	if err != nil {
-		return nil, fmt.Errorf("decode image: %w", err)
+		return composed{}, fmt.Errorf("decode image: %w", err)
 	}
 
 	var out image.Image
-	switch opt.Mode {
-	case ModeFill:
+	fullPanel := true
+	b := img.Bounds()
+	if opt.SmartFill && b.Dx() > b.Dy() {
+		// Landscape with smart fill: crop to fill the whole panel regardless of
+		// mode. A 3:2/4:3 shot only loses a sliver top/bottom.
 		out = imaging.Fill(img, tvWidth, tvHeight, imaging.Center, imaging.Lanczos)
-	case ModeFitColor:
-		out = composeFitColor(img, parseHexColor(opt.BgColor), opt.BorderPct)
-	case ModeBlurFill:
-		out = composeBlurFill(img)
-	case ModeTVMatte, "":
-		// Fit within the panel; the TV applies its matte / black bars. Never
-		// upscales beyond the source, keeping small photos crisp.
-		out = imaging.Fit(img, tvWidth, tvHeight, imaging.Lanczos)
-	default:
-		out = composeBlurFill(img)
+	} else {
+		switch opt.Mode {
+		case ModeFill:
+			out = imaging.Fill(img, tvWidth, tvHeight, imaging.Center, imaging.Lanczos)
+		case ModeFitColor:
+			out = composeFitColor(img, parseHexColor(opt.BgColor), opt.BorderPct)
+		case ModeBlurFill:
+			out = composeBlurFill(img)
+		case ModeTVMatte, "":
+			// Fit within the panel; the TV applies its matte / black bars. Never
+			// upscales beyond the source, keeping small photos crisp.
+			out = imaging.Fit(img, tvWidth, tvHeight, imaging.Lanczos)
+			fullPanel = false
+		default:
+			out = composeBlurFill(img)
+		}
 	}
 
 	if len(opt.Caption) > 0 {
@@ -94,9 +116,9 @@ func prepareJPEG(src []byte, opt DisplayOptions) ([]byte, error) {
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, out, &jpeg.Options{Quality: jpegQual}); err != nil {
-		return nil, fmt.Errorf("encode jpeg: %w", err)
+		return composed{}, fmt.Errorf("encode jpeg: %w", err)
 	}
-	return buf.Bytes(), nil
+	return composed{JPEG: buf.Bytes(), FullPanel: fullPanel}, nil
 }
 
 // composeFitColor centers the photo (fit, optional margin) on a solid canvas.

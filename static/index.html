@@ -403,8 +403,12 @@
         <option value="fit-color" data-i18n="tv.mode.fitColor">Fit on solid color</option>
         <option value="tv-matte" data-i18n="tv.mode.tvMatte">TV matte (TV draws its own frame)</option>
       </select>
-      <small class="field-hint" data-i18n="tv.displayModeHint">First three fill the whole screen. “TV matte” instead fits the photo and lets the TV draw its own framed border.</small>
+      <small class="field-hint" data-i18n="tv.displayModeHint">All modes except “TV matte” fill the whole screen. “TV matte” instead fits the photo and lets the TV draw its own framed border.</small>
     </label>
+    <div class="field">
+      <label class="field checkbox"><input type="checkbox" id="tv-smart-fill"><span data-i18n="tv.smartFill">Smart fill landscape photos</span></label>
+      <small class="field-hint" data-i18n="tv.smartFillHint">Crops landscape photos to fill the whole screen (no bars or matte). Portrait photos keep the display style above.</small>
+    </div>
     <label class="field" id="tv-matte-field" hidden>
       <span data-i18n="tv.matte">Matte</span>
       <select id="tv-matte"></select>

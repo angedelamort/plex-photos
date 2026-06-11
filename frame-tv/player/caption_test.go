@@ -80,7 +80,7 @@ func TestAutoMatte(t *testing.T) {
 // drawCaption must not change the canvas size and must not panic for any corner.
 func TestPrepareJPEG_WithCaption(t *testing.T) {
 	for corner := 0; corner < 4; corner++ {
-		out, err := prepareJPEG(encodeJPEG(t, 3000, 2000), DisplayOptions{
+		res, err := prepareJPEG(encodeJPEG(t, 3000, 2000), DisplayOptions{
 			Mode:          ModeBlurFill,
 			Caption:       []string{"Italy", "2021-07-04", "Canon R6 · f/2.8"},
 			CaptionCorner: corner,
@@ -88,7 +88,7 @@ func TestPrepareJPEG_WithCaption(t *testing.T) {
 		if err != nil {
 			t.Fatalf("corner %d: %v", corner, err)
 		}
-		if dx, dy := decodeBounds(t, out); dx != tvWidth || dy != tvHeight {
+		if dx, dy := decodeBounds(t, res.JPEG); dx != tvWidth || dy != tvHeight {
 			t.Fatalf("corner %d: got %dx%d", corner, dx, dy)
 		}
 	}

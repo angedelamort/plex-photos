@@ -45,24 +45,57 @@ func TestPrepareJPEG_FullPanelModes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, err := prepareJPEG(encodeJPEG(t, c.w, c.h), c.opt)
+			res, err := prepareJPEG(encodeJPEG(t, c.w, c.h), c.opt)
 			if err != nil {
 				t.Fatalf("prepareJPEG: %v", err)
 			}
-			if dx, dy := decodeBounds(t, out); dx != tvWidth || dy != tvHeight {
+			if !res.FullPanel {
+				t.Fatalf("expected FullPanel=true for %s", c.name)
+			}
+			if dx, dy := decodeBounds(t, res.JPEG); dx != tvWidth || dy != tvHeight {
 				t.Fatalf("got %dx%d, want %dx%d", dx, dy, tvWidth, tvHeight)
 			}
 		})
 	}
 }
 
-// tv-matte fits within the panel and does not upscale small sources.
-func TestPrepareJPEG_TVMatteFits(t *testing.T) {
-	out, err := prepareJPEG(encodeJPEG(t, 4000, 3000), DisplayOptions{Mode: ModeTVMatte})
+// SmartFill crops landscape photos to the full panel (suppressing the TV matte),
+// while leaving portrait/square photos to their configured mode.
+func TestPrepareJPEG_SmartFill(t *testing.T) {
+	// Landscape in tv-matte mode: smart fill overrides to a full-panel crop and
+	// reports FullPanel so the uploader skips the matte.
+	res, err := prepareJPEG(encodeJPEG(t, 4000, 3000), DisplayOptions{Mode: ModeTVMatte, SmartFill: true})
 	if err != nil {
 		t.Fatalf("prepareJPEG: %v", err)
 	}
-	dx, dy := decodeBounds(t, out)
+	if !res.FullPanel {
+		t.Fatal("landscape smart fill should report FullPanel")
+	}
+	if dx, dy := decodeBounds(t, res.JPEG); dx != tvWidth || dy != tvHeight {
+		t.Fatalf("landscape got %dx%d, want full panel", dx, dy)
+	}
+
+	// Portrait in tv-matte mode: smart fill does not apply, photo is fitted and
+	// the matte stays in play (FullPanel=false).
+	res, err = prepareJPEG(encodeJPEG(t, 1200, 1600), DisplayOptions{Mode: ModeTVMatte, SmartFill: true})
+	if err != nil {
+		t.Fatalf("prepareJPEG: %v", err)
+	}
+	if res.FullPanel {
+		t.Fatal("portrait smart fill should leave tv-matte fitted (FullPanel=false)")
+	}
+}
+
+// tv-matte fits within the panel and does not upscale small sources.
+func TestPrepareJPEG_TVMatteFits(t *testing.T) {
+	res, err := prepareJPEG(encodeJPEG(t, 4000, 3000), DisplayOptions{Mode: ModeTVMatte})
+	if err != nil {
+		t.Fatalf("prepareJPEG: %v", err)
+	}
+	if res.FullPanel {
+		t.Fatal("tv-matte should report FullPanel=false")
+	}
+	dx, dy := decodeBounds(t, res.JPEG)
 	if dx > tvWidth || dy > tvHeight {
 		t.Fatalf("output %dx%d exceeds panel", dx, dy)
 	}
@@ -70,8 +103,8 @@ func TestPrepareJPEG_TVMatteFits(t *testing.T) {
 		t.Fatalf("expected height %d, got %d", tvHeight, dy)
 	}
 
-	out, _ = prepareJPEG(encodeJPEG(t, 200, 100), DisplayOptions{Mode: ModeTVMatte})
-	if dx, dy := decodeBounds(t, out); dx != 200 || dy != 100 {
+	res, _ = prepareJPEG(encodeJPEG(t, 200, 100), DisplayOptions{Mode: ModeTVMatte})
+	if dx, dy := decodeBounds(t, res.JPEG); dx != 200 || dy != 100 {
 		t.Fatalf("small image was resized: got %dx%d, want 200x100", dx, dy)
 	}
 }

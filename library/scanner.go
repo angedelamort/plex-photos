@@ -312,6 +312,7 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 				if _, err := sc.thumbs.EnsureIndexed(rel, cacheIdx); err != nil {
 					log.Printf("thumbnail %q: %v", rel, err)
 				}
+				sc.indexPhotoMeta(lib.ID, rel)
 				sc.updateProgress(lib.ID, func(p *ScanProgress) { p.ThumbDone++ })
 				if jp != nil {
 					doneMu.Lock()
@@ -328,6 +329,33 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// indexPhotoMeta extracts and stores per-photo metadata (EXIF + Google sidecar
+// JSON + reverse geocode) for the photo at the given URL token. It is
+// incremental: a photo whose file mtime and size are unchanged since the last
+// index is skipped without decoding it. Failures are logged but never abort the
+// scan, mirroring thumbnail generation.
+func (sc *Scanner) indexPhotoMeta(libraryID, rel string) {
+	abs := URLPathToAbs(rel)
+	fi, err := os.Stat(abs)
+	if err != nil {
+		log.Printf("photo meta %q: stat: %v", rel, err)
+		return
+	}
+	mtime, size := fi.ModTime().Unix(), fi.Size()
+	if pm, ps, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok && pm == mtime && ps == size {
+		return // unchanged since last index
+	}
+
+	m := extractPhotoMeta(abs)
+	m.PhotoPath = rel
+	m.LibraryID = libraryID
+	m.FileMtime = mtime
+	m.FileSize = size
+	if err := sc.store.UpsertPhotoMeta(m); err != nil {
+		log.Printf("photo meta %q: upsert: %v", rel, err)
+	}
 }
 
 // CleanupThumbnails removes cached thumbnails that no longer correspond to a

@@ -551,10 +551,11 @@ func (m *Manager) prepareUpload(r *runner, conn artConn, tvCfg *TV, photo librar
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", displayName(photo), err)
 	}
-	jpg, err := prepareJPEG(raw, DisplayOptions{
+	res, err := prepareJPEG(raw, DisplayOptions{
 		Mode:          tvCfg.DisplayMode,
 		BgColor:       tvCfg.BgColor,
 		BorderPct:     tvCfg.BorderPct,
+		SmartFill:     tvCfg.SmartFill,
 		Caption:       buildCaptionLines(tvCfg.CaptionFields, abs, photo),
 		CaptionCorner: corner,
 	})
@@ -567,15 +568,17 @@ func (m *Manager) prepareUpload(r *runner, conn artConn, tvCfg *TV, photo librar
 	}
 	// We bake the framing into the JPEG for every mode except tv-matte, where
 	// the TV draws its own matte from the matte id. "auto" picks a mat color
-	// per photo for the best contrast.
+	// per photo for the best contrast. When the composed image already fills the
+	// panel (e.g. a landscape photo cropped by smart fill), force matte "none"
+	// so the TV doesn't frame an already full-bleed image.
 	matte := "none"
-	if tvCfg.DisplayMode == ModeTVMatte {
+	if tvCfg.DisplayMode == ModeTVMatte && !res.FullPanel {
 		matte = tvCfg.Matte
 		if matte == MatteAuto {
 			matte = autoMatte(raw)
 		}
 	}
-	contentID, err := conn.Upload(jpg, "jpg", matte)
+	contentID, err := conn.Upload(res.JPEG, "jpg", matte)
 	if err != nil {
 		return "", fmt.Errorf("upload: %w", err)
 	}
@@ -745,7 +748,7 @@ func buildCaptionLines(fields []string, abs string, photo library.PlaylistPhoto)
 		}
 	}
 	if on[capLocation] && ex != nil && ex.HasGPS {
-		if place := placeName(ex.Lat, ex.Lon); place != "" {
+		if place := library.PlaceName(ex.Lat, ex.Lon); place != "" {
 			lines = append(lines, place)
 		}
 	}

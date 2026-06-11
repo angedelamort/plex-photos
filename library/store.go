@@ -299,9 +299,10 @@ func (s *Store) collectNodes(rows *sql.Rows) ([]*Node, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Best-effort child count for cards.
+	// Best-effort child count and recursive photo total for cards.
 	for _, n := range out {
 		_ = s.countChildren(n)
+		_ = s.countTotalPhotos(n)
 	}
 	return out, nil
 }
@@ -309,6 +310,20 @@ func (s *Store) collectNodes(rows *sql.Rows) ([]*Node, error) {
 // store reference for collectNodes child-count; bound via method below.
 func (s *Store) countChildren(n *Node) error {
 	return s.db.QueryRow(`SELECT COUNT(*) FROM nodes WHERE parent_id = ?`, n.ID).Scan(&n.ChildCount)
+}
+
+// countTotalPhotos sums photo_count for the node and all of its descendants so
+// collection cards can show how many photos live beneath them, not just the
+// (often zero) photos sitting directly in the folder.
+func (s *Store) countTotalPhotos(n *Node) error {
+	return s.db.QueryRow(`
+		WITH RECURSIVE descendants(id) AS (
+			SELECT id FROM nodes WHERE id = ?
+			UNION ALL
+			SELECT n.id FROM nodes n JOIN descendants d ON n.parent_id = d.id
+		)
+		SELECT COALESCE(SUM(photo_count), 0) FROM nodes WHERE id IN (SELECT id FROM descendants)`,
+		n.ID).Scan(&n.TotalPhotoCount)
 }
 
 // GetNode fetches one node by id.
@@ -321,6 +336,7 @@ func (s *Store) GetNode(id string) (*Node, error) {
 		return nil, err
 	}
 	_ = s.countChildren(n)
+	_ = s.countTotalPhotos(n)
 	return n, nil
 }
 
@@ -614,7 +630,15 @@ func (s *Store) queryHomeNodes(query string, args ...any) ([]*HomeNode, error) {
 		a.Type = nodeType(a.HasChildren, a.PhotoCount)
 		out = append(out, &a)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Best-effort child count and recursive photo total for home cards.
+	for _, a := range out {
+		_ = s.countChildren(&a.Node)
+		_ = s.countTotalPhotos(&a.Node)
+	}
+	return out, nil
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
@@ -796,6 +820,159 @@ func (s *Store) MarkStaleJobsFailed() error {
 		`UPDATE jobs SET status = ?, message = ?, finished_at = ? WHERE status = ?`,
 		JobFailed, "interrupted by restart", time.Now(), JobRunning)
 	return err
+}
+
+// --- Photo metadata index ---
+
+// UpsertPhotoMeta inserts or replaces the indexed metadata for a single photo,
+// rewriting its person tags. photo_meta and photo_people are updated together
+// in a transaction so a photo's row and its people never drift apart.
+func (s *Store) UpsertPhotoMeta(m PhotoMeta) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		INSERT INTO photo_meta
+		    (photo_path, library_id, taken_at, year, lat, lon, has_gps,
+		     place_city, place_country, width, height, orientation,
+		     has_sidecar, file_mtime, file_size, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(photo_path) DO UPDATE SET
+		    library_id = excluded.library_id,
+		    taken_at = excluded.taken_at,
+		    year = excluded.year,
+		    lat = excluded.lat,
+		    lon = excluded.lon,
+		    has_gps = excluded.has_gps,
+		    place_city = excluded.place_city,
+		    place_country = excluded.place_country,
+		    width = excluded.width,
+		    height = excluded.height,
+		    orientation = excluded.orientation,
+		    has_sidecar = excluded.has_sidecar,
+		    file_mtime = excluded.file_mtime,
+		    file_size = excluded.file_size,
+		    indexed_at = CURRENT_TIMESTAMP`,
+		m.PhotoPath, nullIfEmpty(m.LibraryID), nullTime(m.TakenAt), nullIfZero(m.Year),
+		m.Lat, m.Lon, boolToInt(m.HasGPS),
+		nullIfEmpty(m.PlaceCity), nullIfEmpty(m.PlaceCountry),
+		nullIfZero(m.Width), nullIfZero(m.Height), nullIfEmpty(m.Orientation),
+		boolToInt(m.HasSidecar), m.FileMtime, m.FileSize); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM photo_people WHERE photo_path = ?`, m.PhotoPath); err != nil {
+		return err
+	}
+	for _, name := range m.People {
+		if name == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO photo_people (photo_path, name) VALUES (?, ?)`,
+			m.PhotoPath, name); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetPhotoMeta returns the indexed metadata (with person tags) for a photo, or
+// ErrNotFound when it has not been indexed.
+func (s *Store) GetPhotoMeta(photoPath string) (*PhotoMeta, error) {
+	var m PhotoMeta
+	var takenAt sql.NullTime
+	var year, width, height sql.NullInt64
+	var hasGPS, hasSidecar int
+	var city, country, orient, libID sql.NullString
+	err := s.db.QueryRow(`
+		SELECT photo_path, COALESCE(library_id, ''), taken_at, year, lat, lon, has_gps,
+		       place_city, place_country, width, height, orientation, has_sidecar,
+		       COALESCE(file_mtime, 0), COALESCE(file_size, 0)
+		FROM photo_meta WHERE photo_path = ?`, photoPath).
+		Scan(&m.PhotoPath, &libID, &takenAt, &year, &m.Lat, &m.Lon, &hasGPS,
+			&city, &country, &width, &height, &orient, &hasSidecar,
+			&m.FileMtime, &m.FileSize)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.LibraryID = libID.String
+	if takenAt.Valid {
+		m.TakenAt = takenAt.Time
+	}
+	m.Year = int(year.Int64)
+	m.Width = int(width.Int64)
+	m.Height = int(height.Int64)
+	m.HasGPS = hasGPS != 0
+	m.HasSidecar = hasSidecar != 0
+	m.PlaceCity = city.String
+	m.PlaceCountry = country.String
+	m.Orientation = orient.String
+
+	people, err := s.photoPeople(photoPath)
+	if err != nil {
+		return nil, err
+	}
+	m.People = people
+	return &m, nil
+}
+
+func (s *Store) photoPeople(photoPath string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT name FROM photo_people WHERE photo_path = ? ORDER BY name`, photoPath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// PhotoMetaStat returns the file mtime and size recorded for a photo the last
+// time it was indexed. ok is false when the photo has no row yet, so the scan
+// hook knows it must (re)extract.
+func (s *Store) PhotoMetaStat(photoPath string) (mtime, size int64, ok bool, err error) {
+	err = s.db.QueryRow(`SELECT COALESCE(file_mtime, 0), COALESCE(file_size, 0) FROM photo_meta WHERE photo_path = ?`, photoPath).
+		Scan(&mtime, &size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return mtime, size, true, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func nullIfZero(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
+}
+
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }
 
 // FindNodeByPath returns the node whose fs_path matches, if any.

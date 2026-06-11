@@ -32,6 +32,10 @@ type Node struct {
 	FSPath          string `json:"-"`
 	Depth           int    `json:"depth"`
 	PhotoCount      int    `json:"photoCount"`
+	// TotalPhotoCount is PhotoCount plus the photos in every descendant node
+	// (recursive). For an album it equals PhotoCount; for a collection that
+	// only holds sub-folders it reflects the photos nested beneath it.
+	TotalPhotoCount int    `json:"totalPhotoCount"`
 	ChildCount      int    `json:"childCount"`
 	HasChildren     bool   `json:"hasChildren"`
 	// Type is derived from contents: "album" for a leaf folder holding photos,

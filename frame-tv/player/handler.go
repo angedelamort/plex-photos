@@ -73,6 +73,7 @@ type tvInput struct {
 	DisplayMode     string   `json:"displayMode"`
 	BgColor         string   `json:"bgColor"`
 	BorderPct       int      `json:"borderPct"`
+	SmartFill       bool     `json:"smartFill"`
 	CaptionFields   []string `json:"captionFields"`
 	PlayOrder       string   `json:"playOrder"`
 }
@@ -96,6 +97,7 @@ func (in *tvInput) normalize() (TV, error) {
 		DisplayMode: strings.TrimSpace(in.DisplayMode),
 		BgColor:     strings.TrimSpace(in.BgColor),
 		BorderPct:   in.BorderPct,
+		SmartFill:   in.SmartFill,
 		PlayOrder:   strings.TrimSpace(in.PlayOrder),
 	}
 	if tv.Name == "" {
