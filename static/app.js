@@ -5,6 +5,9 @@ const state = {
   libraries: [],
   activeLibraryId: null,
   favorites: new Set(),
+  // Frame TVs configured by an admin; populated at boot. The TV nav item is
+  // revealed only when at least one exists.
+  tvs: [],
   // viewer state
   photos: [],
   photoIndex: 0,
@@ -12,6 +15,9 @@ const state = {
   slideshowTimer: null,
   slideshowActive: false,
   infoOpen: false,
+  // When the viewer is showing photos from a playlist, this holds that
+  // playlist's id so "Remove from playlist" can act on the current photo.
+  currentPlaylistId: null,
 };
 
 // ── slideshow settings ──
@@ -39,6 +45,12 @@ function saveSlideshowSettings(s) {
   syncPrefsToServer();
 }
 let ssSettings = loadSlideshowSettings();
+
+// Pending image swap during a fade transition. The CSS "viewer-fade" keyframe
+// runs 1.6s total (0.8s out, 0.8s in), so we swap the source at the 0.8s
+// midpoint — when the frame is fully faded out — for a true out→swap→in cue.
+let viewerFadeTimer = null;
+const VIEWER_FADE_HALF_MS = 800;
 
 // ── general UI preferences ──
 // density: thumbnail tile size; sort: default album/collection order.
@@ -189,6 +201,7 @@ async function boot() {
   await loadPrefsFromServer();
   state.libraries = await api("/api/libraries");
   await loadFavorites();
+  await loadTVs();
   renderSidebar();
   // Restore the view from the current URL (deep-link / reload support).
   const initial = history.state || pathToRoute(location.pathname);
@@ -209,6 +222,18 @@ async function loadFavorites() {
   } catch (_) {
     state.favorites = new Set();
   }
+}
+
+// loadTVs fetches the configured Frame TVs and reveals the TV nav item when any
+// exist (any authenticated user may view/control them).
+async function loadTVs() {
+  try {
+    state.tvs = await api("/api/tvs");
+  } catch (_) {
+    state.tvs = [];
+  }
+  const nav = $("#nav-tv");
+  if (nav) nav.hidden = !(state.tvs && state.tvs.length > 0);
 }
 
 // Toggle favorite status of an album, updating the server and local state.
@@ -265,7 +290,12 @@ function routeToPath(route) {
     case "home": return "/";
     case "library": return `/library/${route.libraryId}`;
     case "node": return `/library/${route.libraryId}/node/${route.nodeId}`;
+    case "playlists": return "/playlists";
+    case "playlist": return `/playlist/${route.playlistId}`;
+    case "tv": return "/tv";
+    case "tvDetail": return `/tv/${route.tvId}`;
     case "admin": return "/admin";
+    case "admin-tv": return "/admin/tv";
     case "users": return "/users";
     case "jobs": return "/jobs";
     case "errors": return "/errors";
@@ -279,6 +309,11 @@ function routeToPath(route) {
 function pathToRoute(pathname) {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 0) return { view: "home" };
+  if (parts[0] === "playlists") return { view: "playlists" };
+  if (parts[0] === "playlist" && parts[1]) return { view: "playlist", playlistId: decodeURIComponent(parts[1]) };
+  if (parts[0] === "tv" && parts[1]) return { view: "tvDetail", tvId: decodeURIComponent(parts[1]) };
+  if (parts[0] === "tv") return { view: "tv" };
+  if (parts[0] === "admin" && parts[1] === "tv") return { view: "admin-tv" };
   if (parts[0] === "admin") return { view: "admin" };
   if (parts[0] === "users") return { view: "users" };
   if (parts[0] === "jobs") return { view: "jobs" };
@@ -305,6 +340,9 @@ async function navigate(route, opts = {}) {
     }
   }
 
+  // Leaving any view stops the TV dashboard's live polling.
+  stopTVPolling();
+
   const main = $("#main");
   main.innerHTML = `<div class="loading">${esc(t("common.loading"))}</div>`;
   if (route.libraryId) state.activeLibraryId = route.libraryId;
@@ -314,7 +352,12 @@ async function navigate(route, opts = {}) {
       case "home": setActiveSidebar(null, false, true); await renderHome(main); break;
       case "library": setActiveSidebar(route.libraryId); await renderLibrary(main, route.libraryId); break;
       case "node": await renderNode(main, route); break;
+      case "playlists": setActiveSidebar(null, "playlists"); await renderPlaylists(main); break;
+      case "playlist": setActiveSidebar(null, "playlists"); await renderPlaylist(main, route); break;
+      case "tv": setActiveSidebar(null, "tv"); await renderTVList(main); break;
+      case "tvDetail": setActiveSidebar(null, "tv"); await renderTVDetail(main, route); break;
       case "admin": setActiveSidebar(null, true); await renderAdmin(main); break;
+      case "admin-tv": setActiveSidebar(null, "admin-tv"); await renderAdminTVs(main); break;
       case "users": setActiveSidebar(null, "users"); await renderAdminUsers(main); break;
       case "jobs": setActiveSidebar(null, "jobs"); await renderJobs(main); break;
       case "errors": setActiveSidebar(null, "errors"); await renderErrorLog(main); break;
@@ -424,6 +467,681 @@ async function renderLibrary(main, libraryId) {
     main.appendChild(el("div", { class: "empty", text: t("home.emptyScan") }));
   } else {
     main.appendChild(carousel(nodes.map((c) => nodeCard(libraryId, c)), { variant: "landscape" }));
+  }
+}
+
+// ── playlists ──
+// Playlists are user-owned, hand-curated photo sets independent of the folder
+// tree. The list page shows poster cards; a detail page shows the photos with a
+// slideshow and per-photo removal.
+async function renderPlaylists(main) {
+  const pls = await api("/api/playlists");
+  main.innerHTML = "";
+  const header = el("div", { class: "section-header" });
+  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("playlist.title"))}</div><div class="section-sub">${esc(t("playlist.count", { n: pls.length }))}</div>` }));
+  header.appendChild(el("button", { class: "btn accent", html: `${icon("plus")} ${esc(t("playlist.newShort"))}`, onclick: () => openPlaylistModal(null) }));
+  main.appendChild(header);
+
+  if (!pls || pls.length === 0) {
+    main.appendChild(el("div", { class: "empty", text: t("playlist.none") }));
+    return;
+  }
+  main.appendChild(cardGrid(pls.map(playlistCard), { variant: "poster" }));
+}
+
+function playlistCard(pl) {
+  const art = pl.coverPhoto;
+  const thumb = art ? `<img src="${thumbURL(art)}" alt="" loading="lazy">` : icon("playlist");
+  return el("div", {
+    class: "card card--poster",
+    onclick: () => navigate({ view: "playlist", playlistId: pl.id }),
+    html: `<div class="card-thumb">${thumb}</div>
+      <div class="card-body">
+        <div class="card-title">${esc(pl.name)}</div>
+        <div class="card-counts"><span>${esc(t("meta.photos", { n: pl.photoCount || 0 }))}</span></div>
+      </div>`,
+  });
+}
+
+async function renderPlaylist(main, route) {
+  const data = await api(`/api/playlists/${route.playlistId}`);
+  const pl = data.playlist;
+  const photos = data.photos || [];
+  main.innerHTML = "";
+
+  const actions = [];
+  if (photos.length > 0) {
+    actions.push(el("button", {
+      class: "btn accent", html: `${icon("play")} ${esc(t("viewer.slideshow"))}`,
+      onclick: () => openPlaylistViewer(pl, photos, 0, true),
+    }));
+  }
+  if (photos.length > 0 && state.tvs && state.tvs.length > 0) {
+    actions.push(el("button", {
+      class: "btn", html: `${icon("cast")} ${esc(t("tv.sendToTV"))}`,
+      onclick: () => sendPlaylistToTV(pl.id),
+    }));
+  }
+  actions.push(el("button", { class: "btn icon-btn", html: icon("pen"), title: t("playlist.rename"), onclick: () => openPlaylistModal(pl) }));
+  actions.push(el("button", { class: "btn icon-btn danger", html: icon("trash"), title: t("playlist.delete"), onclick: () => deletePlaylist(pl) }));
+
+  main.appendChild(hero(pl.name, "", pl.coverPhoto || "", actions, "", {
+    meta: [t("meta.photos", { n: photos.length })],
+  }));
+
+  if (photos.length === 0) {
+    main.appendChild(el("div", { class: "empty", text: t("playlist.empty") }));
+    return;
+  }
+
+  const grid = el("div", { class: "photo-grid justified" });
+  photos.forEach((p, i) => {
+    const img = el("img", { src: thumbURL(p.path), alt: esc(p.name), loading: "lazy" });
+    const tile = el("div", { class: "photo-thumb", onclick: () => openPlaylistViewer(pl, photos, i, false) });
+    tile.appendChild(img);
+    const rm = el("button", { class: "photo-remove", title: t("playlist.removeFrom"), html: icon("x") });
+    rm.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await removeFromPlaylist(pl.id, p.path);
+      navigate({ view: "playlist", playlistId: pl.id });
+    });
+    tile.appendChild(rm);
+    sizeToBox(tile, img);
+    grid.appendChild(tile);
+  });
+  main.appendChild(grid);
+}
+
+// openPlaylistViewer opens the viewer for a playlist's photos, tagging the album
+// context with coverScope "playlist" so the viewer offers "Remove from playlist".
+function openPlaylistViewer(pl, photos, index, slideshow) {
+  const list = slideshow ? maybeShuffle(photos) : photos;
+  openViewer(list, slideshow ? 0 : index, { id: pl.id, name: pl.name, coverScope: "playlist" }, slideshow);
+}
+
+let editingPlaylist = null;
+function openPlaylistModal(pl) {
+  editingPlaylist = pl;
+  $("#playlist-modal-title").textContent = pl ? t("playlist.rename") : t("playlist.new");
+  $("#playlist-name").value = pl ? pl.name : "";
+  $("#playlist-modal").hidden = false;
+  setTimeout(() => $("#playlist-name").focus(), 30);
+}
+function closePlaylistModal() { $("#playlist-modal").hidden = true; editingPlaylist = null; }
+
+async function savePlaylistName() {
+  const name = $("#playlist-name").value.trim();
+  if (!name) { alert(t("playlist.nameRequired")); return; }
+  try {
+    if (editingPlaylist) {
+      const id = editingPlaylist.id;
+      await api(`/api/playlists/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      closePlaylistModal();
+      navigate({ view: "playlist", playlistId: id });
+    } else {
+      const pl = await api("/api/playlists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      closePlaylistModal();
+      navigate({ view: "playlist", playlistId: pl.id });
+    }
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+async function deletePlaylist(pl) {
+  if (!confirm(t("playlist.confirmDelete", { name: pl.name }))) return;
+  try {
+    await api(`/api/playlists/${pl.id}`, { method: "DELETE" });
+    navigate({ view: "playlists" });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+async function removeFromPlaylist(playlistId, path) {
+  try {
+    await api(`/api/playlists/${playlistId}/items`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }),
+    });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// ── add-to-playlist picker ──
+// pickerPhotos holds the {name, path} entries queued to be added. The picker
+// lists existing playlists (server returns them most-recently-used first) plus
+// a "New playlist…" shortcut.
+let pickerPhotos = [];
+async function openPlaylistPicker(photos, label) {
+  pickerPhotos = (photos || []).filter((p) => p && p.path).map((p) => ({ name: p.name || "", path: p.path }));
+  if (pickerPhotos.length === 0) { alert(t("playlist.noPhotos")); return; }
+  $("#playlist-pick-sub").textContent = label
+    ? t("playlist.addingFrom", { name: label, n: pickerPhotos.length })
+    : t("playlist.nPhotos", { n: pickerPhotos.length });
+  const list = $("#playlist-pick-list");
+  list.innerHTML = `<div class="loading">${esc(t("common.loading"))}</div>`;
+  $("#playlist-pick-modal").hidden = false;
+
+  let pls = [];
+  try { pls = await api("/api/playlists"); } catch (_) { pls = []; }
+  list.innerHTML = "";
+  if (!pls.length) {
+    list.appendChild(el("div", { class: "field-hint", text: t("playlist.noneYet") }));
+    return;
+  }
+  pls.forEach((pl) => {
+    list.appendChild(el("button", {
+      class: "playlist-pick-item",
+      onclick: () => addPhotosToPlaylist(pl.id, pickerPhotos),
+      html: `<span class="playlist-pick-name">${esc(pl.name)}</span>` +
+        `<span class="playlist-pick-count">${esc(t("meta.photos", { n: pl.photoCount || 0 }))}</span>`,
+    }));
+  });
+}
+function closePlaylistPicker() { $("#playlist-pick-modal").hidden = true; pickerPhotos = []; }
+
+async function addPhotosToPlaylist(playlistId, photos) {
+  try {
+    const res = await api(`/api/playlists/${playlistId}/items`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ photos }),
+    });
+    closePlaylistPicker();
+    const n = res && res.added != null ? res.added : photos.length;
+    toast(n > 0 ? t("playlist.added", { n }) : t("playlist.alreadyIn"));
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// ── lightweight toast ──
+let _toastTimer = null;
+function toast(msg) {
+  let box = $("#toast");
+  if (!box) {
+    box = el("div", { id: "toast", class: "toast" });
+    document.body.appendChild(box);
+  }
+  box.textContent = msg;
+  // Force reflow so re-triggering the transition works on rapid toasts.
+  box.classList.remove("show");
+  void box.offsetWidth;
+  box.classList.add("show");
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => box.classList.remove("show"), 2200);
+}
+
+// ── Frame TV dashboard + control ──
+// A TV's live status comes from GET /api/tv/{id}/status; the dashboard polls it
+// every few seconds while mounted. "Status" is the intent (playing/stopped) and
+// "step" is the current swap-loop activity, surfaced for debugging.
+
+// Curated matte presets (Samsung matte ids are "<style>_<color>"). "none" is the
+// safest default; the rest cover the most common framing looks.
+const MATTE_OPTIONS = [
+  ["none", "None"],
+  ["auto", "Auto · match photo"],
+  ["modern_polar", "Modern · White"],
+  ["modern_warm", "Modern · Warm"],
+  ["modern_black", "Modern · Black"],
+  ["flexible_polar", "Flexible · White"],
+  ["shadowbox_polar", "Shadowbox · White"],
+  ["panoramic_polar", "Panoramic · White"],
+];
+
+let tvPollTimer = null;
+// Playlists available to the TV detail view; loaded once per visit and used to
+// populate the "channel" dropdown and to resolve the playing playlist's name.
+let tvDetailPlaylists = [];
+function stopTVPolling() {
+  if (tvPollTimer) { clearInterval(tvPollTimer); tvPollTimer = null; }
+}
+
+// tvStatusKey collapses a live snapshot into one of stopped|playing|error.
+function tvStatusKey(snap) {
+  if (snap && snap.error) return "error";
+  return (snap && snap.status) || "stopped";
+}
+function tvStatusLabel(snap) { return t("tv.status." + tvStatusKey(snap)); }
+function tvBadge(snap) {
+  const k = tvStatusKey(snap);
+  return `<span class="tv-badge tv-badge--${k}">${esc(t("tv.status." + k))}</span>`;
+}
+
+function tvCard(tv) {
+  const snap = tv.status || {};
+  const art = snap.currentPath
+    ? `<img src="${thumbURL(snap.currentPath)}" alt="" loading="lazy">`
+    : `<div class="tv-card-empty">${icon("tv")}</div>`;
+  return el("div", {
+    class: "card card--landscape",
+    onclick: () => navigate({ view: "tvDetail", tvId: tv.id }),
+    html: `<div class="card-thumb tv-card-thumb">${art}${tvBadge(snap)}</div>
+      <div class="card-body">
+        <div class="card-title">${esc(tv.name)}</div>
+        <div class="card-counts"><span>${esc(tvStatusLabel(snap))}</span></div>
+      </div>`,
+  });
+}
+
+async function renderTVList(main) {
+  const tvs = await api("/api/tvs");
+  state.tvs = tvs;
+  const nav = $("#nav-tv");
+  if (nav) nav.hidden = !(tvs && tvs.length > 0);
+
+  main.innerHTML = "";
+  const header = el("div", { class: "section-header" });
+  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("tv.title"))}</div><div class="section-sub">${esc(t("tv.subtitle"))}</div>` }));
+  if (state.user && state.user.isAdmin) {
+    header.appendChild(el("button", { class: "btn accent", html: `${icon("plus")} ${esc(t("tv.addBtn"))}`, onclick: () => openTVModal(null) }));
+  }
+  main.appendChild(header);
+
+  if (!tvs || tvs.length === 0) {
+    const empty = el("div", { class: "empty" }, [el("div", { text: t("tv.none") })]);
+    if (state.user && state.user.isAdmin) empty.appendChild(el("div", { class: "section-sub", text: t("tv.noneAdminHint") }));
+    main.appendChild(empty);
+    return;
+  }
+  main.appendChild(cardGrid(tvs.map(tvCard), { variant: "landscape" }));
+}
+
+async function renderTVDetail(main, route) {
+  const id = route.tvId;
+  let data;
+  try {
+    data = await api(`/api/tv/${id}/status`);
+  } catch (e) {
+    main.innerHTML = `<div class="empty">${esc(t("alert.error", { msg: e.message }))}</div>`;
+    return;
+  }
+  try { tvDetailPlaylists = await api("/api/playlists"); } catch (_) { tvDetailPlaylists = []; }
+
+  main.innerHTML = "";
+  const header = el("div", { class: "section-header" });
+  header.appendChild(el("button", { class: "btn sm", html: `${icon("chevron-left")} ${esc(t("tv.title"))}`, onclick: () => navigate({ view: "tv" }) }));
+  main.appendChild(header);
+
+  const heroEl = el("div", { class: "tv-hero", id: "tv-hero" });
+  const panelEl = el("div", { class: "tv-panel", id: "tv-panel" });
+  main.appendChild(heroEl);
+  main.appendChild(panelEl);
+
+  const paint = (d) => { renderTVHero(heroEl, d); renderTVPanel(panelEl, d); };
+  paint(data);
+
+  stopTVPolling();
+  tvPollTimer = setInterval(async () => {
+    if (!document.body.contains(heroEl)) { stopTVPolling(); return; }
+    try { paint(await api(`/api/tv/${id}/status`)); } catch (_) { /* transient */ }
+  }, 2500);
+}
+
+function renderTVHero(heroEl, d) {
+  const snap = d.status || {};
+  const k = tvStatusKey(snap);
+  const screen = snap.currentPath
+    ? `<img src="${photoURL(snap.currentPath)}" alt="">`
+    : `<div class="tv-hero-empty">${icon("tv")}<span>${esc(t("tv.notPlaying"))}</span></div>`;
+  heroEl.innerHTML = `
+    <div class="tv-hero-screen">${screen}<span class="tv-badge tv-badge--${k}">${esc(t("tv.status." + k))}</span></div>
+    <div class="tv-hero-bar">
+      <div class="tv-hero-title">${esc(d.name)}</div>
+      <div class="tv-hero-channel" id="tv-hero-channel"></div>
+      <div class="tv-hero-actions"></div>
+    </div>`;
+  const channel = heroEl.querySelector(".tv-hero-channel");
+  const actions = heroEl.querySelector(".tv-hero-actions");
+
+  if (snap.status === "playing") {
+    // While playing, the channel is locked: show the playlist name plus an
+    // (i) that explains it can only be changed once stopped.
+    channel.appendChild(el("div", { class: "tv-channel-locked" }, [
+      el("span", { class: "tv-channel-name", text: currentPlaylistName(snap.playlistId) }),
+      el("button", {
+        class: "tv-channel-info", type: "button",
+        title: t("tv.channelLocked"), "aria-label": t("tv.channelLocked"),
+        html: icon("info"), onclick: () => toast(t("tv.channelLocked")),
+      }),
+    ]));
+    actions.appendChild(el("button", { class: "btn", html: `${icon("skip")} ${esc(t("tv.skip"))}`, onclick: () => tvControl(d.id, "skip") }));
+    actions.appendChild(el("button", { class: "btn danger", html: `${icon("stop")} ${esc(t("tv.stop"))}`, onclick: () => tvControl(d.id, "stop") }));
+  } else if (tvDetailPlaylists.length === 0) {
+    channel.appendChild(el("span", { class: "field-hint", text: t("tv.noPlaylists") }));
+  } else {
+    // Stopped: pick the playlist ("channel") from a dropdown. When the chosen
+    // channel has saved progress, offer Resume (continue the deck/position)
+    // plus Restart (fresh shuffle); otherwise a plain Play.
+    const sel = el("select", { class: "control sm tv-channel-select", id: "tv-channel-select" });
+    tvDetailPlaylists.forEach((p) => {
+      sel.appendChild(el("option", { value: p.id, text: `${p.name} · ${t("meta.photos", { n: p.photoCount || 0 })}` }));
+    });
+    const resumeId = snap.resumable ? snap.resumePlaylistId : "";
+    if (snap.playlistId && tvDetailPlaylists.some((p) => p.id === snap.playlistId)) {
+      sel.value = snap.playlistId;
+    }
+    channel.appendChild(sel);
+
+    const renderActions = () => {
+      actions.innerHTML = "";
+      const selId = sel.value;
+      if (resumeId && selId === resumeId) {
+        const frac = snap.resumeTotal ? ` (${(snap.position || 0) + 1}/${snap.resumeTotal})` : "";
+        actions.appendChild(el("button", {
+          class: "btn accent", html: `${icon("play")} ${esc(t("tv.resume"))}${esc(frac)}`,
+          onclick: () => tvResume(d.id),
+        }));
+        actions.appendChild(el("button", {
+          class: "btn", title: t("tv.restartHint"), html: `${icon("refresh")} ${esc(t("tv.restart"))}`,
+          onclick: () => tvPlay(d.id, selId),
+        }));
+      } else {
+        actions.appendChild(el("button", {
+          class: "btn accent", html: `${icon("play")} ${esc(t("tv.play"))}`,
+          onclick: () => { if (selId) tvPlay(d.id, selId); },
+        }));
+      }
+    };
+    sel.addEventListener("change", renderActions);
+    renderActions();
+  }
+}
+
+// currentPlaylistName resolves a playlist id to its display name using the
+// playlists loaded for the TV detail view, falling back to a generic label.
+function currentPlaylistName(playlistId) {
+  const p = (tvDetailPlaylists || []).find((x) => x.id === playlistId);
+  return p ? p.name : t("tv.playlist");
+}
+
+function renderTVPanel(panelEl, d) {
+  const snap = d.status || {};
+  const rows = [];
+  rows.push([t("tv.status"), tvStatusLabel(snap)]);
+  rows.push([t("tv.step"), t("tv.step." + (snap.step || "idle"))]);
+  if (snap.currentName) {
+    const pos = snap.total ? ` (${(snap.position || 0) + 1}/${snap.total})` : "";
+    rows.push([t("tv.current"), snap.currentName + pos]);
+  }
+  const mins = Math.round((d.intervalSeconds || 0) / 60);
+  rows.push([t("tv.intervalLabel"), t("tv.minutesShort", { n: mins })]);
+  if (snap.nextSwapAt && snap.status === "playing") {
+    const secs = Math.max(0, Math.round((new Date(snap.nextSwapAt).getTime() - Date.now()) / 1000));
+    rows.push([t("tv.nextSwap"), t("tv.nextSwapIn", { n: fmtDuration(secs) })]);
+  }
+  if (snap.error) rows.push([t("tv.lastError"), snap.error]);
+
+  panelEl.innerHTML = "";
+  const body = el("div", { class: "tv-panel-body" });
+  const info = el("div", { class: "tv-panel-info" });
+  info.appendChild(el("div", { class: "section-title", text: t("tv.status") }));
+  rows.forEach(([key, val]) => {
+    info.appendChild(el("div", { class: "info-row" }, [
+      el("span", { class: "info-key", text: key }),
+      el("span", { class: "info-val", text: val }),
+    ]));
+  });
+  body.appendChild(info);
+
+  // Next-image preview: a thumbnail on the right with its filename underneath.
+  if (snap.status === "playing" && snap.nextPath) {
+    body.appendChild(el("figure", { class: "tv-next" }, [
+      el("span", { class: "info-key", text: t("tv.next") }),
+      el("img", { class: "tv-next-thumb", src: thumbURL(snap.nextPath), alt: "", loading: "lazy" }),
+      el("figcaption", { class: "tv-next-name", text: snap.nextName || "" }),
+    ]));
+  }
+  panelEl.appendChild(body);
+}
+
+function fmtDuration(secs) {
+  if (secs >= 3600) { const h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60); return `${h}h ${m}m`; }
+  if (secs >= 60) { const m = Math.floor(secs / 60), s = secs % 60; return `${m}m ${s}s`; }
+  return `${secs}s`;
+}
+
+async function tvControl(id, action) {
+  try {
+    await api(`/api/tv/${id}/${action}`, { method: "POST" });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+    return;
+  }
+  if (action !== "skip") {
+    try {
+      const d = await api(`/api/tv/${id}/status`);
+      const heroEl = $("#tv-hero"), panelEl = $("#tv-panel");
+      if (heroEl) renderTVHero(heroEl, d);
+      if (panelEl) renderTVPanel(panelEl, d);
+    } catch (_) { /* poll will refresh */ }
+  }
+}
+
+async function tvPlay(tvId, playlistId) {
+  try {
+    await api(`/api/tv/${tvId}/play`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlistId }) });
+    const d = await api(`/api/tv/${tvId}/status`);
+    const heroEl = $("#tv-hero"), panelEl = $("#tv-panel");
+    if (heroEl) renderTVHero(heroEl, d);
+    if (panelEl) renderTVPanel(panelEl, d);
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// tvResume continues a stopped TV from its saved position/deck (no playlist
+// body needed — the server uses the persisted channel).
+async function tvResume(tvId) {
+  try {
+    await api(`/api/tv/${tvId}/resume`, { method: "POST" });
+    const d = await api(`/api/tv/${tvId}/status`);
+    const heroEl = $("#tv-hero"), panelEl = $("#tv-panel");
+    if (heroEl) renderTVHero(heroEl, d);
+    if (panelEl) renderTVPanel(panelEl, d);
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// sendPlaylistToTV is the "Send to TV" action from a playlist: pick a TV (when
+// more than one), start playback, and jump to its dashboard.
+async function sendPlaylistToTV(playlistId) {
+  let tvs = state.tvs || [];
+  if (!tvs.length) { try { tvs = await api("/api/tvs"); state.tvs = tvs; } catch (_) { tvs = []; } }
+  if (!tvs.length) { alert(t("tv.none")); return; }
+
+  let target;
+  if (tvs.length === 1) {
+    target = tvs[0];
+  } else {
+    const choice = await chooserModal(t("tv.chooseTV"), tvs.map((x) => ({ id: x.id, label: x.name })));
+    if (!choice) return;
+    target = tvs.find((x) => x.id === choice.id);
+  }
+  if (!target) return;
+  try {
+    await api(`/api/tv/${target.id}/play`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlistId }) });
+    toast(t("tv.started", { name: target.name }));
+    navigate({ view: "tvDetail", tvId: target.id });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// chooserModal renders a lightweight one-shot picker and resolves with the
+// chosen option ({id,label,sub}) or null when dismissed.
+function chooserModal(title, options) {
+  return new Promise((resolve) => {
+    const overlay = el("div", { class: "modal" });
+    const card = el("div", { class: "modal-card" });
+    card.appendChild(el("div", { class: "modal-title", text: title }));
+    const list = el("div", { class: "playlist-pick-list" });
+    let settled = false;
+    const done = (val) => { if (settled) return; settled = true; overlay.remove(); resolve(val); };
+    options.forEach((o) => {
+      list.appendChild(el("button", {
+        class: "playlist-pick-item",
+        onclick: () => done(o),
+        html: `<span class="playlist-pick-name">${esc(o.label)}</span>` +
+          (o.sub ? `<span class="playlist-pick-count">${esc(o.sub)}</span>` : ""),
+      }));
+    });
+    card.appendChild(list);
+    const acts = el("div", { class: "modal-actions" });
+    acts.appendChild(el("button", { class: "btn", text: t("common.close"), onclick: () => done(null) }));
+    card.appendChild(acts);
+    overlay.appendChild(card);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) done(null); });
+    document.body.appendChild(overlay);
+  });
+}
+
+// ── admin: Frame TV management ──
+async function buildTVRows(main) {
+  let tvs = [];
+  try { tvs = await api("/api/admin/tvs"); } catch (_) { tvs = []; }
+  if (!tvs.length) {
+    main.appendChild(el("div", { class: "empty", text: t("tv.none") }));
+    return;
+  }
+  tvs.forEach((tv) => {
+    const row = el("div", { class: "lib-row" });
+    const modeKey = { "blur-fill": "blurFill", "fill": "fill", "fit-color": "fitColor", "tv-matte": "tvMatte" }[tv.displayMode] || "blurFill";
+    row.appendChild(el("div", {
+      html: `<div class="lib-name">${esc(tv.name)}</div>` +
+        `<div class="lib-path">${esc(tv.ip)} &nbsp;·&nbsp; ${esc(t("tv.mode." + modeKey))} &nbsp;·&nbsp; ${esc(intervalLabel(tv.intervalSeconds || DEFAULT_INTERVAL))}</div>`,
+    }));
+    const actions = el("div", { class: "lib-actions" });
+    actions.appendChild(el("button", { class: "btn sm", html: icon("edit"), onclick: () => openTVModal(tv) }));
+    actions.appendChild(el("button", { class: "btn sm danger", html: icon("trash"), onclick: () => deleteTV(tv) }));
+    row.appendChild(actions);
+    main.appendChild(row);
+  });
+}
+
+// Caption fields offered in the TV modal (keys must match the backend).
+const CAPTION_FIELDS = ["date", "year", "camera", "location", "filename", "album"];
+
+// Swap interval presets, in seconds.
+const INTERVAL_OPTIONS = [30, 45, 60, 180, 300, 600, 900, 1800];
+const DEFAULT_INTERVAL = 300;
+
+function intervalLabel(s) {
+  return s < 60 ? t("tv.unitSec", { n: s }) : t("tv.unitMin", { n: s / 60 });
+}
+function populateIntervalSelect(sel) {
+  if (!sel) return;
+  sel.innerHTML = "";
+  INTERVAL_OPTIONS.forEach((s) => {
+    const opt = el("option", { text: intervalLabel(s) });
+    opt.value = String(s);
+    sel.appendChild(opt);
+  });
+}
+// Snap an arbitrary stored interval to the closest preset so legacy values
+// (e.g. 3600s) still select a valid option.
+function nearestInterval(s) {
+  return INTERVAL_OPTIONS.reduce((best, v) => (Math.abs(v - s) < Math.abs(best - s) ? v : best), INTERVAL_OPTIONS[0]);
+}
+
+let editingTVId = null;
+function populateMatteSelect(sel) {
+  if (!sel) return;
+  sel.innerHTML = "";
+  MATTE_OPTIONS.forEach(([val, label]) => {
+    const opt = el("option", { text: label });
+    opt.value = val;
+    sel.appendChild(opt);
+  });
+}
+// Show only the fields relevant to the chosen display mode: the TV matte
+// picker for "tv-matte", the colour/border inputs for "fit-color".
+function updateTVModeFields() {
+  const mode = $("#tv-display-mode").value;
+  $("#tv-matte-field").hidden = mode !== "tv-matte";
+  $("#tv-color-fields").hidden = mode !== "fit-color";
+}
+
+function openTVModal(tv) {
+  editingTVId = tv ? tv.id : null;
+  $("#tv-modal-title").textContent = tv ? t("tv.edit") : t("tv.new");
+  $("#tv-name").value = tv ? tv.name : "";
+  $("#tv-ip").value = tv ? tv.ip : "";
+  $("#tv-display-mode").value = (tv && tv.displayMode) ? tv.displayMode : "blur-fill";
+  populateMatteSelect($("#tv-matte"));
+  $("#tv-matte").value = (tv && tv.matte) ? tv.matte : "none";
+  $("#tv-bg-color").value = (tv && tv.bgColor) ? tv.bgColor : "#000000";
+  $("#tv-border").value = tv ? (tv.borderPct || 0) : 0;
+  populateIntervalSelect($("#tv-interval"));
+  $("#tv-interval").value = String(tv && tv.intervalSeconds ? nearestInterval(tv.intervalSeconds) : DEFAULT_INTERVAL);
+  $("#tv-play-order").value = (tv && tv.playOrder === "random") ? "random" : "sequential";
+  const caps = new Set((tv && tv.captionFields) || []);
+  CAPTION_FIELDS.forEach((k) => { const cb = $("#tv-cap-" + k); if (cb) cb.checked = caps.has(k); });
+  updateTVModeFields();
+  const msg = $("#tv-test-msg");
+  msg.hidden = true; msg.textContent = ""; msg.className = "setup-msg";
+  $("#tv-modal").hidden = false;
+  setTimeout(() => $("#tv-name").focus(), 30);
+}
+function closeTVModal() { $("#tv-modal").hidden = true; editingTVId = null; }
+
+async function saveTV() {
+  const payload = {
+    name: $("#tv-name").value.trim(),
+    ip: $("#tv-ip").value.trim(),
+    matte: $("#tv-matte").value,
+    displayMode: $("#tv-display-mode").value,
+    bgColor: $("#tv-bg-color").value,
+    borderPct: Math.max(0, Math.min(40, parseInt($("#tv-border").value, 10) || 0)),
+    captionFields: CAPTION_FIELDS.filter((k) => { const cb = $("#tv-cap-" + k); return cb && cb.checked; }),
+    intervalSeconds: parseInt($("#tv-interval").value, 10) || DEFAULT_INTERVAL,
+    playOrder: $("#tv-play-order").value === "random" ? "random" : "sequential",
+  };
+  if (!payload.name || !payload.ip) { alert(t("alert.nameRootRequired")); return; }
+  try {
+    if (editingTVId) {
+      await api(`/api/admin/tvs/${editingTVId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    } else {
+      await api("/api/admin/tvs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    }
+    closeTVModal();
+    await loadTVs();
+    await renderAdminTVs($("#main"));
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+async function deleteTV(tv) {
+  if (!confirm(t("tv.confirmDelete", { name: tv.name }))) return;
+  try {
+    await api(`/api/admin/tvs/${tv.id}`, { method: "DELETE" });
+    await loadTVs();
+    await renderAdminTVs($("#main"));
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+async function testTV() {
+  const ip = $("#tv-ip").value.trim();
+  const msg = $("#tv-test-msg");
+  if (!ip) { msg.hidden = false; msg.className = "setup-msg error"; msg.textContent = t("tv.ipHint"); return; }
+  msg.hidden = false; msg.className = "setup-msg"; msg.textContent = t("tv.testing");
+  try {
+    const r = await api("/api/admin/tvs/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }) });
+    if (!r.reachable) { msg.className = "setup-msg error"; msg.textContent = t("tv.testUnreachable"); return; }
+    if (r.frameSupported) {
+      msg.className = "setup-msg success";
+      msg.textContent = r.model ? t("tv.testModel", { model: r.model }) : t("tv.testFrame");
+    } else {
+      msg.className = "setup-msg";
+      msg.textContent = t("tv.testNoFrame");
+    }
+  } catch (e) {
+    msg.className = "setup-msg error";
+    msg.textContent = t("alert.error", { msg: e.message });
   }
 }
 
@@ -751,6 +1469,12 @@ async function renderNode(main, route) {
       favBtn.innerHTML = icon(nowFav ? "heart-filled" : "heart");
     });
     actions.push(favBtn);
+
+    // Add this album's photos to a playlist.
+    actions.push(el("button", {
+      class: "btn icon-btn", title: t("playlist.addAlbum"), html: icon("playlist-add"),
+      onclick: () => openPlaylistPicker(photos, node.name),
+    }));
   }
   if (state.user.isAdmin) {
     actions.push(el("button", {
@@ -845,8 +1569,16 @@ function openViewer(photos, index, album, slideshow) {
   state.photoIndex = index;
   state.currentAlbum = album;
   $("#viewer").hidden = false;
-  // Cover/background menu only when viewing a real album (not collection/library slideshows).
-  $("#viewer-menu-wrap").hidden = !state.user.isAdmin || !(album && album.id && album.coverScope === undefined);
+  // The "..." menu always offers "Add to playlist". Poster/background are admin
+  // actions on a real album (not collection/library slideshows); "Remove from
+  // playlist" only when viewing photos that came from a playlist.
+  const realAlbum = state.user.isAdmin && !!(album && album.id && album.coverScope === undefined);
+  const inPlaylist = !!(album && album.coverScope === "playlist" && album.id);
+  state.currentPlaylistId = inPlaylist ? album.id : null;
+  $("#viewer-set-poster").hidden = !realAlbum;
+  $("#viewer-set-background").hidden = !realAlbum;
+  $("#viewer-remove-playlist").hidden = !inPlaylist;
+  $("#viewer-menu-wrap").hidden = false;
   closeViewerMenu();
   updateViewer();
   if (slideshow) startSlideshow(); else applyOverlay();
@@ -856,25 +1588,38 @@ function updateViewer() {
   const p = state.photos[state.photoIndex];
   if (!p) return;
   const img = $("#viewer-img");
+  if (viewerFadeTimer) { clearTimeout(viewerFadeTimer); viewerFadeTimer = null; }
   img.classList.remove("fade", "slide", "stretch", "scroll", "fit");
   img.style.removeProperty("--scroll-from");
   img.style.removeProperty("--scroll-to");
   img.style.removeProperty("--scroll-dur");
   // re-trigger transition animation
   void img.offsetWidth;
-  if (state.slideshowActive && ssSettings.transition !== "none") {
-    img.classList.add(ssSettings.transition);
-  }
+
   // Photo fit mode (only active during slideshow; manual viewing always uses "fit").
   const mode = state.slideshowActive ? ssSettings.fitMode : "fit";
   if (mode === "fill") img.classList.add("stretch");
   else if (mode === "scroll") img.classList.add("scroll");
   else if (mode === "fit") img.classList.add("fit");
-  img.src = photoURL(p.path);
-  if (mode === "scroll") setupAutoScroll(img);
-  $("#viewer-caption").textContent = `${p.name}  (${state.photoIndex + 1}/${state.photos.length})`;
-  if (state.infoOpen) loadInfo();
-  applyOverlay();
+
+  // Swap the image and its caption/info to the current photo.
+  const swap = () => {
+    img.src = photoURL(p.path);
+    if (mode === "scroll") setupAutoScroll(img);
+    $("#viewer-caption").textContent = `${p.name}  (${state.photoIndex + 1}/${state.photos.length})`;
+    if (state.infoOpen) loadInfo();
+    applyOverlay();
+  };
+
+  if (state.slideshowActive && ssSettings.transition === "fade") {
+    // Fade the previous frame out first, then swap once it's hidden so the
+    // sequence reads as fade-out → change → fade-in (not change → fade).
+    img.classList.add("fade");
+    viewerFadeTimer = setTimeout(() => { viewerFadeTimer = null; swap(); }, VIEWER_FADE_HALF_MS);
+  } else {
+    if (state.slideshowActive && ssSettings.transition === "slide") img.classList.add("slide");
+    swap();
+  }
 }
 
 // Auto-scroll: fill one screen dimension, then pan across the overflowing
@@ -972,6 +1717,7 @@ function startSlideshow() {
 }
 function stopSlideshow() {
   if (state.slideshowTimer) { clearInterval(state.slideshowTimer); state.slideshowTimer = null; }
+  if (viewerFadeTimer) { clearTimeout(viewerFadeTimer); viewerFadeTimer = null; }
   state.slideshowActive = false;
   $("#viewer").classList.remove("slideshow-running");
   cancelHideControls();
@@ -1478,6 +2224,16 @@ async function renderAdmin(main) {
   settingsGroup.appendChild(await buildThumbWorkersPanel());
   settingsGroup.appendChild(await buildRowLimitPanel());
   main.appendChild(settingsGroup);
+}
+
+// ── admin: Frame TVs ──
+async function renderAdminTVs(main) {
+  main.innerHTML = "";
+  const tvHeader = el("div", { class: "section-header" });
+  tvHeader.appendChild(el("div", { html: `<div class="section-title">${esc(t("tv.adminTitle"))}</div><div class="section-sub">${esc(t("tv.adminSub"))}</div>` }));
+  tvHeader.appendChild(el("button", { class: "btn accent", html: `${icon("plus")} ${esc(t("tv.addBtn"))}`, onclick: () => openTVModal(null) }));
+  main.appendChild(tvHeader);
+  await buildTVRows(main);
 }
 
 // ── admin: users / library access ──
@@ -2052,6 +2808,28 @@ $("#viewer-slideshow").addEventListener("click", () => { if (state.slideshowActi
 $("#viewer-menu-btn").addEventListener("click", (e) => { e.stopPropagation(); toggleViewerMenu(); });
 $("#viewer-set-poster").addEventListener("click", () => setCurrentArt("cover"));
 $("#viewer-set-background").addEventListener("click", () => setCurrentArt("background"));
+$("#viewer-add-playlist").addEventListener("click", () => {
+  closeViewerMenu();
+  const p = state.photos[state.photoIndex];
+  if (p) openPlaylistPicker([{ name: p.name, path: p.path }]);
+});
+$("#viewer-remove-playlist").addEventListener("click", async () => {
+  closeViewerMenu();
+  const p = state.photos[state.photoIndex];
+  if (!p || !state.currentPlaylistId) return;
+  const playlistId = state.currentPlaylistId;
+  await removeFromPlaylist(playlistId, p.path);
+  // Drop it from the in-memory list and keep the viewer on a valid photo.
+  const idx = state.photos.findIndex((x) => x.path === p.path);
+  if (idx >= 0) state.photos.splice(idx, 1);
+  if (state.photos.length === 0) {
+    closeViewer();
+    navigate({ view: "playlist", playlistId });
+    return;
+  }
+  state.photoIndex = state.photoIndex % state.photos.length;
+  updateViewer();
+});
 document.addEventListener("click", (e) => {
   if (!$("#viewer-menu").hidden && !e.target.closest("#viewer-menu-wrap")) closeViewerMenu();
 });
@@ -2070,6 +2848,28 @@ $("#lib-cancel").addEventListener("click", closeLibModal);
 $("#lib-save").addEventListener("click", saveLib);
 $("#user-cancel").addEventListener("click", closeUserModal);
 $("#user-save").addEventListener("click", saveUser);
+
+// Frame TV admin modal
+$("#tv-cancel").addEventListener("click", closeTVModal);
+$("#tv-save").addEventListener("click", saveTV);
+$("#tv-test").addEventListener("click", testTV);
+$("#tv-display-mode").addEventListener("change", updateTVModeFields);
+
+// playlist modals (create/rename + add-to-playlist picker)
+$("#playlist-cancel").addEventListener("click", closePlaylistModal);
+$("#playlist-save").addEventListener("click", savePlaylistName);
+$("#playlist-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); savePlaylistName(); } });
+$("#playlist-pick-cancel").addEventListener("click", closePlaylistPicker);
+$("#playlist-pick-new").addEventListener("click", async () => {
+  const name = prompt(t("playlist.newPrompt"));
+  if (!name || !name.trim()) return;
+  try {
+    const pl = await api("/api/playlists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
+    await addPhotosToPlaylist(pl.id, pickerPhotos);
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+});
 
 // user dropdown menu (avatar)
 (function setupUserMenu() {
@@ -2246,6 +3046,12 @@ document.addEventListener("click", () => {
 
 document.addEventListener("keydown", (e) => {
   if ($("#viewer").hidden) return;
+  // A modal (e.g. the add-to-playlist picker) can sit above the viewer; let it
+  // own keyboard input instead of closing/navigating the viewer underneath.
+  if (document.querySelector(".modal:not([hidden])")) {
+    if (e.key === "Escape") { closePlaylistPicker(); closePlaylistModal(); }
+    return;
+  }
   if (e.key === "Escape") closeViewer();
   else if (e.key === "ArrowLeft") { stopSlideshow(); viewerStep(-1); }
   else if (e.key === "ArrowRight") { stopSlideshow(); viewerStep(1); }

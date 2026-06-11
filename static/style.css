@@ -974,6 +974,125 @@ input.control[type="checkbox"]:focus-visible {
   .scan-banner { left: 18px; right: 18px; width: auto; }
 }
 
+/* ── PLAYLISTS ── */
+.modal-sub { font-size: 12px; color: var(--text-muted); margin: -10px 0 16px; }
+.playlist-pick-new { width: 100%; justify-content: center; margin-bottom: 12px; }
+.playlist-pick-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 320px; overflow-y: auto; margin-bottom: 12px;
+}
+.playlist-pick-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; padding: 10px 12px;
+  background: var(--bg); color: var(--text); cursor: pointer;
+  border: 0.5px solid var(--border-hover); border-radius: var(--radius);
+  font-family: inherit; font-size: 13px;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.playlist-pick-item:hover { border-color: var(--accent); background: var(--bg-surface); }
+.playlist-pick-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.playlist-pick-count { font-size: 11px; color: var(--text-muted); flex: none; }
+
+/* Per-photo remove button on the playlist detail grid (shown on hover). */
+.photo-remove {
+  position: absolute; top: 6px; right: 6px;
+  width: 26px; height: 26px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 50%; cursor: pointer;
+  background: rgba(0,0,0,0.55); color: #fff;
+  opacity: 0; transition: opacity 0.15s, background-color 0.15s;
+}
+.photo-thumb:hover .photo-remove { opacity: 1; }
+.photo-remove:hover { background: var(--danger); }
+.photo-remove .icon { font-size: 15px; }
+
+/* ── TOAST (bottom-center confirmation) ── */
+.toast {
+  position: fixed; bottom: 28px; left: 50%; transform: translate(-50%, 12px);
+  z-index: 1200; max-width: calc(100vw - 36px);
+  padding: 11px 18px; border-radius: var(--radius-lg);
+  background: var(--bg-card); color: var(--text);
+  border: 0.5px solid var(--accent); box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+  font-size: 13px; opacity: 0; pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ── FRAME TV ── */
+/* status badge shown on cards and the dashboard hero */
+.tv-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+  padding: 3px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  background: rgba(0,0,0,0.55); color: var(--text);
+  border: 0.5px solid var(--border); backdrop-filter: blur(4px);
+}
+.tv-badge--playing { color: #0fb884; border-color: rgba(15,184,132,0.5); }
+.tv-badge--error { color: var(--danger); border-color: rgba(224,92,92,0.5); }
+.tv-card-thumb { position: relative; }
+.tv-card-empty, .tv-hero-empty {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; color: var(--text-hint);
+}
+.tv-card-empty .icon { font-size: 34px; }
+.tv-hero-empty .icon { font-size: 54px; }
+.tv-hero-empty span { font-size: 13px; color: var(--text-muted); }
+
+.tv-hero {
+  margin-bottom: 22px; border-radius: var(--radius-lg); overflow: hidden;
+  background: var(--bg-surface); border: 0.5px solid var(--border);
+}
+.tv-hero-screen {
+  position: relative; aspect-ratio: 16/9; background: #000;
+  display: flex; align-items: center; justify-content: center;
+}
+.tv-hero-screen img { width: 100%; height: 100%; object-fit: contain; }
+.tv-hero-bar {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 16px;
+}
+.tv-hero-title { font-size: 17px; font-weight: 600; }
+/* The channel control sits centered between the title and the actions. */
+.tv-hero-channel { flex: 1; display: flex; justify-content: center; min-width: 180px; }
+.tv-channel-select { min-width: 220px; max-width: 320px; }
+.tv-channel-locked { display: inline-flex; align-items: center; gap: 8px; }
+.tv-channel-name {
+  font-size: 14px; font-weight: 600;
+  padding: 5px 12px; border-radius: 999px;
+  background: var(--bg-elev, rgba(255,255,255,0.06)); border: 0.5px solid var(--border);
+}
+.tv-channel-info {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  background: none; border: none; cursor: pointer; color: var(--text-hint);
+  transition: color 0.12s;
+}
+.tv-channel-info:hover { color: var(--text); }
+.tv-hero-actions { display: flex; gap: 8px; }
+
+.tv-panel {
+  max-width: 640px; padding: 18px;
+  background: var(--bg-surface); border: 0.5px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.tv-panel-body { display: flex; gap: 20px; align-items: flex-start; }
+.tv-panel-info { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.tv-panel .section-title { margin-bottom: 4px; }
+/* Next-image preview on the right of the status panel. */
+.tv-next { margin: 0; display: flex; flex-direction: column; gap: 6px; width: 160px; flex-shrink: 0; }
+.tv-next-thumb {
+  width: 160px; aspect-ratio: 16/10; object-fit: cover;
+  border-radius: var(--radius); border: 0.5px solid var(--border); background: #000;
+}
+.tv-next-name { font-size: 12px; color: var(--text-muted); word-break: break-word; }
+
+/* caption field toggles in the TV modal */
+.tv-caption-fields {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin-top: 8px;
+}
+.tv-caption-fields .field.checkbox { margin: 0; }
+
 /* ── RESPONSIVE ── */
 @media (max-width: 720px) {
   .sidebar { width: 56px; }
@@ -983,4 +1102,10 @@ input.control[type="checkbox"]:focus-visible {
   .topbar { gap: 12px; padding: 0 12px; }
   .topbar-search { max-width: none; }
   .main { padding: 18px 14px; }
+  .tv-hero-channel { order: 3; flex-basis: 100%; justify-content: flex-start; }
+  .tv-channel-select { width: 100%; max-width: none; }
+  .tv-hero-actions { width: 100%; }
+  .tv-panel-body { flex-direction: column; }
+  .tv-next { width: 100%; flex-direction: row; align-items: center; }
+  .tv-next-thumb { width: 120px; }
 }

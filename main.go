@@ -13,6 +13,7 @@ import (
 
 	"plex-photos/auth"
 	"plex-photos/config"
+	"plex-photos/frame-tv/player"
 	"plex-photos/library"
 	"plex-photos/server"
 )
@@ -56,6 +57,13 @@ func main() {
 	}
 	galleryHandler := library.NewHandler(store, scanner, thumbs, artDir)
 	galleryHandler.SetVersion(version)
+
+	// Frame TV: manage configured TVs and run the per-TV photo swap loop.
+	tvStore := player.NewStore(db)
+	tvManager := player.NewManager(tvStore, store)
+	tvManager.Recover() // resume TVs that were playing before a restart
+	defer tvManager.Shutdown()
+	tvHandler := player.NewHandler(tvStore, tvManager)
 
 	// Background job manager: runs library scans and thumbnail regeneration as
 	// serialized, tracked jobs surfaced on the admin Jobs page.
@@ -108,6 +116,7 @@ func main() {
 		Sessions:  sessions,
 		Mw:        mw,
 		Gallery:   galleryHandler,
+		TV:        tvHandler,
 		StaticDir: "static",
 		Setup:     setupHandler,
 	})
@@ -171,4 +180,3 @@ func resolvePlexSetup(cfg *config.Config, store *library.Store) (*auth.SetupStat
 		PublicBaseURL: publicBase,
 	}), envLocked
 }
-

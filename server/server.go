@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"plex-photos/auth"
+	"plex-photos/frame-tv/player"
 	"plex-photos/library"
 )
 
@@ -20,6 +21,10 @@ type Deps struct {
 	Mw        *auth.Middleware
 	Gallery   *library.Handler
 	StaticDir string
+
+	// TV is the Frame TV management + playback handler. When non-nil, the TV
+	// admin and dashboard routes are registered.
+	TV *player.Handler
 
 	// Setup is the first-run wizard handler. When non-nil and not yet
 	// configured, the app serves the setup page instead of the login screen.
@@ -159,6 +164,33 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/libraries/{id}/random-albums", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.ListRandomAlbums)))
 	mux.Handle("PUT /api/nodes/{node}/favorite", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.SetFavorite)))
 	mux.Handle("DELETE /api/nodes/{node}/favorite", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.SetFavorite)))
+
+	// --- Playlists (per-user) ---
+	mux.Handle("GET /api/playlists", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.ListPlaylists)))
+	mux.Handle("POST /api/playlists", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.CreatePlaylist)))
+	mux.Handle("GET /api/playlists/{id}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.GetPlaylist)))
+	mux.Handle("PUT /api/playlists/{id}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.RenamePlaylist)))
+	mux.Handle("DELETE /api/playlists/{id}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.DeletePlaylist)))
+	mux.Handle("POST /api/playlists/{id}/items", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.AddPlaylistItems)))
+	mux.Handle("DELETE /api/playlists/{id}/items", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.RemovePlaylistItem)))
+
+	// --- Frame TV (admin-managed, controllable by any authenticated user) ---
+	if d.TV != nil {
+		// Admin: configure TVs.
+		mux.Handle("GET /api/admin/tvs", d.Mw.RequireAdmin(http.HandlerFunc(d.TV.ListTVsAdmin)))
+		mux.Handle("POST /api/admin/tvs", d.Mw.RequireAdmin(http.HandlerFunc(d.TV.CreateTV)))
+		mux.Handle("POST /api/admin/tvs/test", d.Mw.RequireAdmin(http.HandlerFunc(d.TV.TestTV)))
+		mux.Handle("PUT /api/admin/tvs/{id}", d.Mw.RequireAdmin(http.HandlerFunc(d.TV.UpdateTV)))
+		mux.Handle("DELETE /api/admin/tvs/{id}", d.Mw.RequireAdmin(http.HandlerFunc(d.TV.DeleteTV)))
+
+		// User: dashboard + playback control.
+		mux.Handle("GET /api/tvs", d.Mw.RequireAuth(http.HandlerFunc(d.TV.ListTVs)))
+		mux.Handle("GET /api/tv/{id}/status", d.Mw.RequireAuth(http.HandlerFunc(d.TV.TVStatus)))
+		mux.Handle("POST /api/tv/{id}/play", d.Mw.RequireAuth(http.HandlerFunc(d.TV.PlayTV)))
+		mux.Handle("POST /api/tv/{id}/resume", d.Mw.RequireAuth(http.HandlerFunc(d.TV.ResumeTV)))
+		mux.Handle("POST /api/tv/{id}/stop", d.Mw.RequireAuth(http.HandlerFunc(d.TV.StopTV)))
+		mux.Handle("POST /api/tv/{id}/skip", d.Mw.RequireAuth(http.HandlerFunc(d.TV.SkipTV)))
+	}
 
 	// --- Assets ---
 	mux.Handle("GET /api/thumb/{path...}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.Thumb)))

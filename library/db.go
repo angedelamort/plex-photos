@@ -85,6 +85,73 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- User-owned playlists: an ordered, hand-curated set of photos (independent of
+-- the folder tree). Playlists are private to their owner. last_used_at is
+-- bumped whenever the owner adds to the playlist so the "Add to playlist" menu
+-- can surface the most recently used ones first.
+CREATE TABLE IF NOT EXISTS playlists (
+  id            TEXT PRIMARY KEY,
+  owner         TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  cover_photo   TEXT,
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  last_used_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- A single photo entry in a playlist. photo_path is the same URL token used for
+-- thumb/photo requests (access is re-checked per request against the owner's
+-- accessible library roots). The UNIQUE constraint dedupes re-adds; position
+-- keeps the user's ordering.
+CREATE TABLE IF NOT EXISTS playlist_items (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+  photo_path  TEXT NOT NULL,
+  photo_name  TEXT NOT NULL DEFAULT '',
+  position    INTEGER NOT NULL DEFAULT 0,
+  added_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (playlist_id, photo_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playlists_owner ON playlists(owner, last_used_at);
+CREATE INDEX IF NOT EXISTS idx_playlist_items_pl ON playlist_items(playlist_id, position);
+
+-- Samsung Frame TVs configured by an admin. token is captured on the first
+-- successful connection and reused to skip the "allow this device?" prompt.
+-- matte + interval_s are this TV's defaults for the playlist swap loop.
+CREATE TABLE IF NOT EXISTS tvs (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  ip           TEXT NOT NULL,
+  token        TEXT NOT NULL DEFAULT '',
+  matte        TEXT NOT NULL DEFAULT 'none',
+  interval_s   INTEGER NOT NULL DEFAULT 3600,
+  display_mode TEXT NOT NULL DEFAULT 'blur-fill',
+  bg_color     TEXT NOT NULL DEFAULT '#000000',
+  border_pct   INTEGER NOT NULL DEFAULT 0,
+  caption_fields TEXT NOT NULL DEFAULT '',
+  play_order   TEXT NOT NULL DEFAULT 'sequential',
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Runtime state of the swap loop for each TV (one row per TV). Only the
+-- persistent fields needed to resume after a restart live here; transient
+-- fields (current step, seconds-until-next, last error) are kept in memory by
+-- the player. status is 'stopped' | 'playing' | 'error'.
+CREATE TABLE IF NOT EXISTS tv_player_state (
+  tv_id           TEXT PRIMARY KEY REFERENCES tvs(id) ON DELETE CASCADE,
+  owner           TEXT NOT NULL DEFAULT '',
+  playlist_id     TEXT,
+  status          TEXT NOT NULL DEFAULT 'stopped',
+  position        INTEGER NOT NULL DEFAULT 0,
+  current_path    TEXT,
+  current_content TEXT,
+  last_swap_at    DATETIME,
+  deck            TEXT NOT NULL DEFAULT '',
+  updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Global app settings as simple key/value rows (e.g. auto-scan interval).
 CREATE TABLE IF NOT EXISTS settings (
   key        TEXT PRIMARY KEY,
@@ -190,6 +257,12 @@ func migrate(db *sql.DB) error {
 		{"libraries", "background_photo", `ALTER TABLE libraries ADD COLUMN background_photo TEXT`},
 		{"libraries", "sort_title", `ALTER TABLE libraries ADD COLUMN sort_title TEXT`},
 		{"libraries", "summary", `ALTER TABLE libraries ADD COLUMN summary TEXT`},
+		{"tvs", "display_mode", `ALTER TABLE tvs ADD COLUMN display_mode TEXT NOT NULL DEFAULT 'blur-fill'`},
+		{"tvs", "bg_color", `ALTER TABLE tvs ADD COLUMN bg_color TEXT NOT NULL DEFAULT '#000000'`},
+		{"tvs", "border_pct", `ALTER TABLE tvs ADD COLUMN border_pct INTEGER NOT NULL DEFAULT 0`},
+		{"tvs", "caption_fields", `ALTER TABLE tvs ADD COLUMN caption_fields TEXT NOT NULL DEFAULT ''`},
+		{"tvs", "play_order", `ALTER TABLE tvs ADD COLUMN play_order TEXT NOT NULL DEFAULT 'sequential'`},
+		{"tv_player_state", "deck", `ALTER TABLE tv_player_state ADD COLUMN deck TEXT NOT NULL DEFAULT ''`},
 	} {
 		if !hasColumn(db, m.table, m.column) {
 			if _, err := db.Exec(m.ddl); err != nil {

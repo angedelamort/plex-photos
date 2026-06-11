@@ -27,6 +27,29 @@ func (s *Store) CanAccessNode(nodeID, username string, isAdmin bool) (bool, erro
 	return s.CanAccessLibrary(n.LibraryID, username, isAdmin)
 }
 
+// ResolvePhotoFile turns a photo URL token (as stored in playlist_items.photo_path)
+// into an absolute filesystem path, confirming it is an image confined under one
+// of the configured library roots. It is an owner-agnostic confinement guard for
+// trusted server-side readers (e.g. the Frame TV player) that have already
+// established the caller's right to the playlist; it never returns a path that
+// escapes a library root.
+func (s *Store) ResolvePhotoFile(path string) (string, error) {
+	full := URLPathToAbs(path)
+	if !IsImage(full) {
+		return "", ErrUnsafePath
+	}
+	libs, err := s.ListLibraries()
+	if err != nil {
+		return "", err
+	}
+	for _, lib := range libs {
+		if underRoot(lib.RootPath, full) {
+			return full, nil
+		}
+	}
+	return "", ErrUnsafePath
+}
+
 // CanAccessPhotoPath checks whether a user may access a photo at the given
 // absolute path by verifying it falls under an accessible library root. This is
 // the sole confinement guard for photo/thumb/exif requests.

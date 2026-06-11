@@ -27,6 +27,12 @@ type ExifInfo struct {
 	ISO         string `json:"iso,omitempty"`
 	FocalLength string `json:"focalLength,omitempty"`
 	GPS         string `json:"gps,omitempty"`
+
+	// Structured coordinates (when present) for reverse geocoding. HasGPS
+	// distinguishes a real 0,0 fix from "no GPS data".
+	Lat    float64 `json:"-"`
+	Lon    float64 `json:"-"`
+	HasGPS bool    `json:"-"`
 }
 
 // ReadExif extracts EXIF metadata (and pixel dimensions) from an image file.
@@ -75,6 +81,7 @@ func ReadExif(path string) (*ExifInfo, error) {
 	}
 	if lat, lon, err := x.LatLong(); err == nil {
 		info.GPS = fmt.Sprintf("%.5f, %.5f", lat, lon)
+		info.Lat, info.Lon, info.HasGPS = lat, lon, true
 	}
 
 	return info, nil
