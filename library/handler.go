@@ -841,7 +841,17 @@ func (h *Handler) Art(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, full)
 }
 
-// Exif returns EXIF metadata for an accessible photo.
+// exifResponse augments the on-demand EXIF with indexed metadata (geocoded
+// place, person tags) so the viewer can show a richer "Details" section. The
+// extra fields are omitted when empty, leaving the EXIF-only shape unchanged.
+type exifResponse struct {
+	*ExifInfo
+	Place  string   `json:"place,omitempty"`
+	People []string `json:"people,omitempty"`
+}
+
+// Exif returns EXIF metadata for an accessible photo, enriched with the indexed
+// place name and person tags when they are available.
 func (h *Handler) Exif(w http.ResponseWriter, r *http.Request) {
 	s := auth.FromContext(r.Context())
 	rel := r.PathValue("path")
@@ -860,7 +870,33 @@ func (h *Handler) Exif(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, info)
+
+	resp := exifResponse{ExifInfo: info}
+
+	// Layer in scan-indexed metadata (people, geocoded place) when present.
+	if m, err := h.store.GetPhotoMeta(full); err == nil && m != nil {
+		resp.People = m.People
+		resp.Place = joinPlace(m.PlaceCity, m.PlaceCountry)
+	}
+	// Fall back to on-demand reverse geocoding for photos that have GPS but
+	// were not indexed (or were indexed before geocoding was available).
+	if resp.Place == "" && info.HasGPS {
+		resp.Place = PlaceName(info.Lat, info.Lon)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// joinPlace formats a "City, Country" label, dropping whichever part is empty.
+func joinPlace(city, country string) string {
+	parts := make([]string, 0, 2)
+	if city != "" {
+		parts = append(parts, city)
+	}
+	if country != "" {
+		parts = append(parts, country)
+	}
+	return strings.Join(parts, ", ")
 }
 
 type nodeMetadataInput struct {

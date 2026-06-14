@@ -227,6 +227,15 @@ func (c *ArtClient) APIVersion() (string, error) {
 	return "", fmt.Errorf("TV did not report an art API version")
 }
 
+// KeepAlive issues a lightweight request so the TV doesn't close the art
+// channel during a long idle interval — Frame firmware drops sockets that go
+// quiet for roughly a minute. It doubles as a liveness check: a non-nil error
+// means the connection is gone and the caller should reconnect.
+func (c *ArtClient) KeepAlive() error {
+	_, err := c.request("get_artmode_status", nil, 8*time.Second)
+	return err
+}
+
 // ArtModeStatus returns "on" or "off" depending on whether the TV is currently
 // showing Art Mode (as opposed to regular TV / standby).
 func (c *ArtClient) ArtModeStatus() (string, error) {

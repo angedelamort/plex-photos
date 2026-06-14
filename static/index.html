@@ -378,7 +378,7 @@
   </div>
 </div>
 
-<!-- TV MODAL (admin: add / edit a Frame TV) -->
+<!-- TV MODAL (admin: add / edit a Frame TV — identity only; display options live on the TV page) -->
 <div id="tv-modal" class="modal" hidden>
   <div class="modal-card">
     <div class="modal-title" id="tv-modal-title" data-i18n="tv.new">Add TV</div>
@@ -395,58 +395,6 @@
       <small class="field-hint" data-i18n="tv.ipHint">The Frame TV's static IP on your local network.</small>
       <p class="setup-msg" id="tv-test-msg" hidden></p>
     </label>
-    <label class="field">
-      <span data-i18n="tv.displayMode">Display style</span>
-      <select id="tv-display-mode">
-        <option value="blur-fill" data-i18n="tv.mode.blurFill">Blurred background (fills screen)</option>
-        <option value="fill" data-i18n="tv.mode.fill">Crop to fill screen</option>
-        <option value="fit-color" data-i18n="tv.mode.fitColor">Fit on solid color</option>
-        <option value="tv-matte" data-i18n="tv.mode.tvMatte">TV matte (TV draws its own frame)</option>
-      </select>
-      <small class="field-hint" data-i18n="tv.displayModeHint">All modes except “TV matte” fill the whole screen. “TV matte” instead fits the photo and lets the TV draw its own framed border.</small>
-    </label>
-    <div class="field">
-      <label class="field checkbox"><input type="checkbox" id="tv-smart-fill"><span data-i18n="tv.smartFill">Smart fill landscape photos</span></label>
-      <small class="field-hint" data-i18n="tv.smartFillHint">Crops landscape photos to fill the whole screen (no bars or matte). Portrait photos keep the display style above.</small>
-    </div>
-    <label class="field" id="tv-matte-field" hidden>
-      <span data-i18n="tv.matte">Matte</span>
-      <select id="tv-matte"></select>
-    </label>
-    <div class="field-row" id="tv-color-fields" hidden>
-      <label class="field">
-        <span data-i18n="tv.bgColor">Background</span>
-        <input type="color" id="tv-bg-color" value="#000000">
-      </label>
-      <label class="field">
-        <span data-i18n="tv.border">Border (%)</span>
-        <input type="number" id="tv-border" min="0" max="40" step="1" value="0">
-      </label>
-    </div>
-    <label class="field">
-      <span data-i18n="tv.interval">Swap every</span>
-      <select id="tv-interval"></select>
-    </label>
-    <label class="field">
-      <span data-i18n="tv.playOrder">Play order</span>
-      <select id="tv-play-order">
-        <option value="sequential" data-i18n="tv.order.sequential">Sequential (playlist order)</option>
-        <option value="random" data-i18n="tv.order.random">Random (shuffle, no early repeats)</option>
-      </select>
-      <small class="field-hint" data-i18n="tv.playOrderHint">Random shuffles the whole playlist and shows every photo once before any repeats, then reshuffles.</small>
-    </label>
-    <div class="field">
-      <span data-i18n="tv.caption">Caption overlay</span>
-      <small class="field-hint" data-i18n="tv.captionHint">Burned into the photo, rotating corners to avoid burn-in. All off by default.</small>
-      <div class="tv-caption-fields">
-        <label class="field checkbox"><input type="checkbox" id="tv-cap-date"><span data-i18n="tv.cap.date">Date taken</span></label>
-        <label class="field checkbox"><input type="checkbox" id="tv-cap-year"><span data-i18n="tv.cap.year">Year</span></label>
-        <label class="field checkbox"><input type="checkbox" id="tv-cap-camera"><span data-i18n="tv.cap.camera">Camera &amp; settings</span></label>
-        <label class="field checkbox"><input type="checkbox" id="tv-cap-location"><span data-i18n="tv.cap.location">Location (city, country)</span></label>
-        <label class="field checkbox"><input type="checkbox" id="tv-cap-filename"><span data-i18n="tv.cap.filename">Filename</span></label>
-        <label class="field checkbox"><input type="checkbox" id="tv-cap-album"><span data-i18n="tv.cap.album">Folder / album</span></label>
-      </div>
-    </div>
     <div class="modal-actions">
       <button class="btn" id="tv-cancel" data-i18n="common.cancel">Cancel</button>
       <button class="btn accent" id="tv-save" data-i18n="common.save">Save</button>

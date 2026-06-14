@@ -344,6 +344,15 @@ func (h *Handler) DeletePlaylist(w http.ResponseWriter, r *http.Request) {
 // maxPlaylistAddPhotos caps how many photos one add request may carry.
 const maxPlaylistAddPhotos = 5000
 
+// asyncPlaylistAddThreshold is the number of accessible photos above which an
+// add is offloaded to a background job (tracked on the Jobs page) instead of
+// running inline, so adding a large album doesn't block the request/UI.
+const asyncPlaylistAddThreshold = 200
+
+// playlistAddChunk is how many photos each background insert transaction covers,
+// letting the job report incremental progress as it works through the album.
+const playlistAddChunk = 200
+
 type playlistItemsInput struct {
 	Photos []PlaylistPhoto `json:"photos"`
 }
@@ -385,6 +394,41 @@ func (h *Handler) AddPlaylistItems(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "no accessible photos provided")
 		return
 	}
+
+	// Large adds are handled by a background job: the request returns 202
+	// immediately and the work is tracked on the Jobs page, so adding a big
+	// album doesn't tie up the UI.
+	if h.jobs != nil && len(allowed) > asyncPlaylistAddThreshold {
+		pl, err := h.store.GetPlaylist(s.Username, id)
+		if errors.Is(err, ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "playlist not found")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		owner, queued := s.Username, len(allowed)
+		jobID := h.jobs.Enqueue(JobTypePlaylistAdd, pl.Name, func(p *JobProgress) error {
+			p.SetPhase("adding", queued)
+			for start := 0; start < len(allowed); start += playlistAddChunk {
+				end := start + playlistAddChunk
+				if end > len(allowed) {
+					end = len(allowed)
+				}
+				if _, err := h.store.AddPlaylistPhotos(owner, id, allowed[start:end]); err != nil {
+					return err
+				}
+				p.SetProgress(end, queued)
+			}
+			return nil
+		})
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"async": true, "jobId": jobID, "queued": queued, "playlist": pl,
+		})
+		return
+	}
+
 	added, err := h.store.AddPlaylistPhotos(s.Username, id, allowed)
 	if errors.Is(err, ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "playlist not found")

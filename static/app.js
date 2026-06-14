@@ -647,6 +647,10 @@ async function addPhotosToPlaylist(playlistId, photos) {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ photos }),
     });
     closePlaylistPicker();
+    if (res && res.async) {
+      toast(t("playlist.addingBackground", { n: res.queued != null ? res.queued : photos.length }));
+      return;
+    }
     const n = res && res.added != null ? res.added : photos.length;
     toast(n > 0 ? t("playlist.added", { n }) : t("playlist.alreadyIn"));
   } catch (e) {
@@ -687,6 +691,19 @@ const MATTE_OPTIONS = [
   ["flexible_polar", "Flexible · White"],
   ["shadowbox_polar", "Shadowbox · White"],
   ["panoramic_polar", "Panoramic · White"],
+];
+
+// Art Mode post-process effects (The Frame's "painterly" filters). Values are
+// the TV's canonical filter ids; "none" disables the effect. Applied off-screen
+// before each photo is shown so there is no visible "develop" transition.
+const FILTER_OPTIONS = [
+  ["none", "tv.filter.none"],
+  ["Wash", "tv.filter.wash"],
+  ["Pastel", "tv.filter.pastel"],
+  ["Feuve", "tv.filter.feuve"],
+  ["Ink", "tv.filter.ink"],
+  ["Aqua", "tv.filter.aqua"],
+  ["ArtDeco", "tv.filter.artDeco"],
 ];
 
 let tvPollTimer = null;
@@ -768,7 +785,7 @@ async function renderTVDetail(main, route) {
   main.appendChild(heroEl);
   main.appendChild(panelEl);
 
-  const paint = (d) => { renderTVHero(heroEl, d); renderTVPanel(panelEl, d); };
+  const paint = (d) => { updateTVHero(heroEl, d); renderTVPanel(panelEl, d); };
   paint(data);
 
   stopTVPolling();
@@ -778,14 +795,49 @@ async function renderTVDetail(main, route) {
   }, 2500);
 }
 
-function renderTVHero(heroEl, d) {
+// screenHTML renders the TV "screen" preview (current photo or empty state)
+// plus the status badge. Kept separate so polling can refresh just the picture
+// without rebuilding the controls underneath (which would discard edits).
+function screenHTML(d) {
   const snap = d.status || {};
   const k = tvStatusKey(snap);
   const screen = snap.currentPath
     ? `<img src="${photoURL(snap.currentPath)}" alt="">`
     : `<div class="tv-hero-empty">${icon("tv")}<span>${esc(t("tv.notPlaying"))}</span></div>`;
+  return `${screen}<span class="tv-badge tv-badge--${k}">${esc(t("tv.status." + k))}</span>`;
+}
+
+// updateTVHero is the poll-time entry point. It rebuilds the controls only when
+// the playing/stopped mode flips (so in-progress edits to the inline options
+// survive the 2.5s refresh); otherwise it just repaints the screen preview.
+function updateTVHero(heroEl, d) {
+  const snap = d.status || {};
+  const mode = snap.status === "playing" ? "playing" : "stopped";
+  if (heroEl.dataset.mode !== mode || !heroEl.firstChild) {
+    renderTVHero(heroEl, d);
+  } else {
+    updateTVScreen(heroEl, d);
+  }
+}
+
+// updateTVScreen repaints only the screen preview when the shown photo or
+// status changed, avoiding needless <img> reloads (and flicker) on each poll.
+function updateTVScreen(heroEl, d) {
+  const snap = d.status || {};
+  const shot = (snap.currentPath || "") + "|" + tvStatusKey(snap);
+  if (heroEl.dataset.shot === shot) return;
+  heroEl.dataset.shot = shot;
+  const screenEl = heroEl.querySelector(".tv-hero-screen");
+  if (screenEl) screenEl.innerHTML = screenHTML(d);
+}
+
+function renderTVHero(heroEl, d) {
+  const snap = d.status || {};
+  const playing = snap.status === "playing";
+  heroEl.dataset.mode = playing ? "playing" : "stopped";
+  heroEl.dataset.shot = (snap.currentPath || "") + "|" + tvStatusKey(snap);
   heroEl.innerHTML = `
-    <div class="tv-hero-screen">${screen}<span class="tv-badge tv-badge--${k}">${esc(t("tv.status." + k))}</span></div>
+    <div class="tv-hero-screen">${screenHTML(d)}</div>
     <div class="tv-hero-bar">
       <div class="tv-hero-title">${esc(d.name)}</div>
       <div class="tv-hero-channel" id="tv-hero-channel"></div>
@@ -794,7 +846,7 @@ function renderTVHero(heroEl, d) {
   const channel = heroEl.querySelector(".tv-hero-channel");
   const actions = heroEl.querySelector(".tv-hero-actions");
 
-  if (snap.status === "playing") {
+  if (playing) {
     // While playing, the channel is locked: show the playlist name plus an
     // (i) that explains it can only be changed once stopped.
     channel.appendChild(el("div", { class: "tv-channel-locked" }, [
@@ -812,7 +864,8 @@ function renderTVHero(heroEl, d) {
   } else {
     // Stopped: pick the playlist ("channel") from a dropdown. When the chosen
     // channel has saved progress, offer Resume (continue the deck/position)
-    // plus Restart (fresh shuffle); otherwise a plain Play.
+    // plus Restart (fresh shuffle); otherwise a plain Play. Pressing any of
+    // these first flushes the inline options so playback uses the latest setup.
     const sel = el("select", { class: "control sm tv-channel-select", id: "tv-channel-select" });
     tvDetailPlaylists.forEach((p) => {
       sel.appendChild(el("option", { value: p.id, text: `${p.name} · ${t("meta.photos", { n: p.photoCount || 0 })}` }));
@@ -823,6 +876,7 @@ function renderTVHero(heroEl, d) {
     }
     channel.appendChild(sel);
 
+    const start = async (fn) => { await flushTVSettings(d.id, heroEl); await fn(); };
     const renderActions = () => {
       actions.innerHTML = "";
       const selId = sel.value;
@@ -830,22 +884,181 @@ function renderTVHero(heroEl, d) {
         const frac = snap.resumeTotal ? ` (${(snap.position || 0) + 1}/${snap.resumeTotal})` : "";
         actions.appendChild(el("button", {
           class: "btn accent", html: `${icon("play")} ${esc(t("tv.resume"))}${esc(frac)}`,
-          onclick: () => tvResume(d.id),
+          onclick: () => start(() => tvResume(d.id)),
         }));
         actions.appendChild(el("button", {
           class: "btn", title: t("tv.restartHint"), html: `${icon("refresh")} ${esc(t("tv.restart"))}`,
-          onclick: () => tvPlay(d.id, selId),
+          onclick: () => start(() => tvPlay(d.id, selId)),
         }));
       } else {
         actions.appendChild(el("button", {
           class: "btn accent", html: `${icon("play")} ${esc(t("tv.play"))}`,
-          onclick: () => { if (selId) tvPlay(d.id, selId); },
+          onclick: () => { if (selId) start(() => tvPlay(d.id, selId)); },
         }));
       }
     };
     sel.addEventListener("change", renderActions);
     renderActions();
   }
+
+  // Inline display/playback options, below the first line in the same card.
+  // Editable while stopped (auto-saved), read-only while playing.
+  heroEl.appendChild(renderTVOptions(d, playing));
+}
+
+// ── inline TV options (display + playback) ──
+// These mirror what used to live in the admin modal, but are edited right on
+// the TV page. Changes auto-save to the per-TV config (debounced) so the last
+// setup is remembered, and they lock to read-only while the TV is playing.
+
+let tvSettingsTimer = null;
+
+// collectTVOptions reads the current option controls within a hero card into a
+// settings payload for PUT /api/tv/{id}/settings.
+function collectTVOptions(scope) {
+  const get = (k) => scope.querySelector(`[data-tvopt="${k}"]`);
+  const caps = CAPTION_FIELDS.filter((k) => {
+    const cb = scope.querySelector(`[data-tvcap="${k}"]`);
+    return cb && cb.checked;
+  });
+  return {
+    displayMode: get("displayMode") ? get("displayMode").value : "blur-fill",
+    smartFill: get("smartFill") ? get("smartFill").checked : false,
+    matte: get("matte") ? get("matte").value : "none",
+    bgColor: get("bgColor") ? get("bgColor").value : "#000000",
+    borderPct: get("borderPct") ? Math.max(0, Math.min(40, parseInt(get("borderPct").value, 10) || 0)) : 0,
+    intervalSeconds: get("interval") ? (parseInt(get("interval").value, 10) || DEFAULT_INTERVAL) : DEFAULT_INTERVAL,
+    playOrder: get("playOrder") && get("playOrder").value === "random" ? "random" : "sequential",
+    photoFilter: get("photoFilter") ? get("photoFilter").value : "none",
+    captionFields: caps,
+  };
+}
+
+async function saveTVSettings(id, payload) {
+  try {
+    await api(`/api/tv/${id}/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  } catch (e) {
+    toast(t("alert.error", { msg: e.message }));
+  }
+}
+
+// scheduleTVSettingsSave debounces auto-save so dragging a number/colour or
+// flipping several toggles results in a single write.
+function scheduleTVSettingsSave(id, scope) {
+  clearTimeout(tvSettingsTimer);
+  tvSettingsTimer = setTimeout(() => saveTVSettings(id, collectTVOptions(scope)), 400);
+}
+
+// flushTVSettings cancels any pending debounce and writes immediately, used
+// right before play/resume so playback always uses the on-screen options.
+async function flushTVSettings(id, scope) {
+  clearTimeout(tvSettingsTimer);
+  const opts = scope.querySelector(".tv-options");
+  if (!opts || opts.classList.contains("tv-options--locked")) return;
+  await saveTVSettings(id, collectTVOptions(scope));
+}
+
+// applyTVOptVisibility shows only the option rows relevant to the chosen
+// display style (matte for "tv-matte", colour/border for "fit-color").
+function applyTVOptVisibility(wrap) {
+  const modeEl = wrap.querySelector('[data-tvopt="displayMode"]');
+  if (!modeEl) return;
+  const mode = modeEl.value;
+  const matte = wrap.querySelector(".tv-opt-matte");
+  const color = wrap.querySelector(".tv-opt-color");
+  if (matte) matte.hidden = mode !== "tv-matte";
+  if (color) color.hidden = mode !== "fit-color";
+}
+
+function tvOptSelect(key, options, value, locked, onChange) {
+  const sel = el("select", { class: "control sm", "data-tvopt": key });
+  options.forEach(([v, label]) => { const o = el("option", { text: label }); o.value = v; sel.appendChild(o); });
+  sel.value = value;
+  if (locked) sel.disabled = true;
+  sel.addEventListener("change", onChange);
+  return sel;
+}
+
+function tvOptField(labelText, control, extraClass) {
+  return el("label", { class: "field tv-opt" + (extraClass ? " " + extraClass : "") }, [
+    el("span", { text: labelText }), control,
+  ]);
+}
+
+function renderTVOptions(d, locked) {
+  const wrap = el("div", { class: "tv-options" + (locked ? " tv-options--locked" : "") });
+  const onChange = () => { applyTVOptVisibility(wrap); if (!locked) scheduleTVSettingsSave(d.id, wrap); };
+
+  // Display style.
+  wrap.appendChild(tvOptField(t("tv.displayMode"), tvOptSelect("displayMode", [
+    ["blur-fill", t("tv.mode.blurFill")],
+    ["fill", t("tv.mode.fill")],
+    ["fit-color", t("tv.mode.fitColor")],
+    ["tv-matte", t("tv.mode.tvMatte")],
+  ], d.displayMode || "blur-fill", locked, onChange)));
+
+  // Swap interval.
+  wrap.appendChild(tvOptField(t("tv.interval"), tvOptSelect("interval",
+    INTERVAL_OPTIONS.map((s) => [String(s), intervalLabel(s)]),
+    String(nearestInterval(d.intervalSeconds || DEFAULT_INTERVAL)), locked, onChange)));
+
+  // Play order.
+  wrap.appendChild(tvOptField(t("tv.playOrder"), tvOptSelect("playOrder", [
+    ["sequential", t("tv.order.sequential")],
+    ["random", t("tv.order.random")],
+  ], d.playOrder === "random" ? "random" : "sequential", locked, onChange)));
+
+  // Art effect (Frame post-process filter), applied off-screen before each swap.
+  wrap.appendChild(tvOptField(t("tv.filter"),
+    tvOptSelect("photoFilter", FILTER_OPTIONS.map(([v, k]) => [v, t(k)]),
+      d.photoFilter || "none", locked, onChange)));
+
+  // Matte (only relevant for the "tv-matte" display style).
+  wrap.appendChild(tvOptField(t("tv.matte"),
+    tvOptSelect("matte", MATTE_OPTIONS, d.matte || "none", locked, onChange), "tv-opt-matte"));
+
+  // Background colour + border (only relevant for "fit-color").
+  const bg = el("input", { type: "color", "data-tvopt": "bgColor", value: d.bgColor || "#000000" });
+  const border = el("input", { type: "number", "data-tvopt": "borderPct", min: "0", max: "40", step: "1", value: String(d.borderPct || 0) });
+  if (locked) { bg.disabled = true; border.disabled = true; }
+  bg.addEventListener("change", onChange);
+  border.addEventListener("change", onChange);
+  wrap.appendChild(el("div", { class: "tv-opt tv-opt-color" }, [
+    el("label", { class: "field" }, [el("span", { text: t("tv.bgColor") }), bg]),
+    el("label", { class: "field" }, [el("span", { text: t("tv.border") }), border]),
+  ]));
+
+  // Smart fill toggle.
+  const smart = el("input", { type: "checkbox", "data-tvopt": "smartFill" });
+  smart.checked = !!d.smartFill;
+  if (locked) smart.disabled = true;
+  smart.addEventListener("change", onChange);
+  wrap.appendChild(el("div", { class: "tv-opt tv-opt-wide" }, [
+    el("label", { class: "field checkbox" }, [smart, el("span", { text: t("tv.smartFill") })]),
+    el("small", { class: "field-hint", text: t("tv.smartFillHint") }),
+  ]));
+
+  // Caption overlays.
+  const caps = new Set(d.captionFields || []);
+  const grid = el("div", { class: "tv-caption-fields" });
+  CAPTION_FIELDS.forEach((kf) => {
+    const cb = el("input", { type: "checkbox", "data-tvcap": kf });
+    cb.checked = caps.has(kf);
+    if (locked) cb.disabled = true;
+    cb.addEventListener("change", onChange);
+    grid.appendChild(el("label", { class: "field checkbox" }, [cb, el("span", { text: t("tv.cap." + kf) })]));
+  });
+  wrap.appendChild(el("div", { class: "tv-opt tv-opt-wide" }, [
+    el("span", { class: "tv-opt-label", text: t("tv.caption") }),
+    el("small", { class: "field-hint", text: t("tv.captionHint") }),
+    grid,
+  ]));
+
+  if (locked) {
+    wrap.appendChild(el("div", { class: "tv-options-lock", text: t("tv.optionsLocked") }));
+  }
+  applyTVOptVisibility(wrap);
+  return wrap;
 }
 
 // currentPlaylistName resolves a playlist id to its display name using the
@@ -884,15 +1097,89 @@ function renderTVPanel(panelEl, d) {
   });
   body.appendChild(info);
 
-  // Next-image preview: a thumbnail on the right with its filename underneath.
+  // Right column: the next-image preview on top, then the history list below.
+  const side = el("div", { class: "tv-panel-side" });
+
+  // Next-image preview: a thumbnail with its filename underneath.
   if (snap.status === "playing" && snap.nextPath) {
-    body.appendChild(el("figure", { class: "tv-next" }, [
+    side.appendChild(el("figure", { class: "tv-next" }, [
       el("span", { class: "info-key", text: t("tv.next") }),
       el("img", { class: "tv-next-thumb", src: thumbURL(snap.nextPath), alt: "", loading: "lazy" }),
       el("figcaption", { class: "tv-next-name", text: snap.nextName || "" }),
     ]));
   }
+
+  // History: the last few shown photos (newest first) with a quick remove that
+  // drops the photo from the playlist, so an unwanted frame won't come back.
+  if (Array.isArray(snap.history) && snap.history.length) {
+    side.appendChild(renderTVHistory(d.id, snap));
+  }
+
+  if (side.childNodes.length) body.appendChild(side);
   panelEl.appendChild(body);
+}
+
+// renderTVHistory builds the recently-shown list. Each row carries a remove (−)
+// button that deletes the photo from the playing playlist.
+function renderTVHistory(tvId, snap) {
+  const playlistId = snap.playlistId;
+  const wrap = el("div", { class: "tv-history" }, [
+    el("span", { class: "info-key", text: t("tv.history") }),
+  ]);
+  const list = el("ul", { class: "tv-history-list" });
+  snap.history.forEach((item) => {
+    const removeBtn = el("button", {
+      class: "tv-history-remove", type: "button",
+      title: t("tv.removeFromPlaylist"), "aria-label": t("tv.removeFromPlaylist"),
+      html: icon("x"),
+    });
+    const row = el("li", { class: "tv-history-item" }, [
+      el("img", { class: "tv-history-thumb", src: thumbURL(item.path), alt: "", loading: "lazy" }),
+      el("div", { class: "tv-history-meta" }, [
+        el("div", { class: "tv-history-name", text: item.name || "" }),
+        el("div", { class: "tv-history-time", text: fmtRelative(item.shownAt) }),
+      ]),
+      removeBtn,
+    ]);
+    removeBtn.addEventListener("click", () => removeFromTVHistory(tvId, playlistId, item, row, removeBtn));
+    list.appendChild(row);
+  });
+  wrap.appendChild(list);
+  return wrap;
+}
+
+// removeFromTVHistory drops a photo from the playing playlist. It updates the
+// row optimistically (the next status poll reflects the new playlist).
+async function removeFromTVHistory(tvId, playlistId, item, row, btn) {
+  if (!playlistId) { alert(t("tv.removeNoPlaylist")); return; }
+  btn.disabled = true;
+  try {
+    await api(`/api/playlists/${playlistId}/items`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: item.path }),
+    });
+    row.classList.add("removed");
+    toast(t("tv.removedToast", { name: item.name || "" }));
+  } catch (e) {
+    btn.disabled = false;
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// fmtRelative renders a short "time since" label (e.g. "just now", "5m ago")
+// for the history timestamps; falls back to a clock time for older entries.
+function fmtRelative(iso) {
+  const then = new Date(iso).getTime();
+  if (!then) return "";
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (secs < 10) return t("time.justNow");
+  if (secs < 60) return t("time.secondsAgo", { n: secs });
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return t("time.minutesAgo", { n: mins });
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return t("time.hoursAgo", { n: hrs });
+  return new Date(then).toLocaleDateString();
 }
 
 function fmtDuration(secs) {
@@ -1030,75 +1317,47 @@ const DEFAULT_INTERVAL = 300;
 function intervalLabel(s) {
   return s < 60 ? t("tv.unitSec", { n: s }) : t("tv.unitMin", { n: s / 60 });
 }
-function populateIntervalSelect(sel) {
-  if (!sel) return;
-  sel.innerHTML = "";
-  INTERVAL_OPTIONS.forEach((s) => {
-    const opt = el("option", { text: intervalLabel(s) });
-    opt.value = String(s);
-    sel.appendChild(opt);
-  });
-}
 // Snap an arbitrary stored interval to the closest preset so legacy values
 // (e.g. 3600s) still select a valid option.
 function nearestInterval(s) {
   return INTERVAL_OPTIONS.reduce((best, v) => (Math.abs(v - s) < Math.abs(best - s) ? v : best), INTERVAL_OPTIONS[0]);
 }
 
+// The admin TV modal now edits only the TV's identity (name + IP). All display
+// and playback options are edited inline on the TV detail page, so editing here
+// must not clobber them — we carry the existing config through on save.
 let editingTVId = null;
-function populateMatteSelect(sel) {
-  if (!sel) return;
-  sel.innerHTML = "";
-  MATTE_OPTIONS.forEach(([val, label]) => {
-    const opt = el("option", { text: label });
-    opt.value = val;
-    sel.appendChild(opt);
-  });
-}
-// Show only the fields relevant to the chosen display mode: the TV matte
-// picker for "tv-matte", the colour/border inputs for "fit-color".
-function updateTVModeFields() {
-  const mode = $("#tv-display-mode").value;
-  $("#tv-matte-field").hidden = mode !== "tv-matte";
-  $("#tv-color-fields").hidden = mode !== "fit-color";
-}
+let editingTVData = null;
 
 function openTVModal(tv) {
   editingTVId = tv ? tv.id : null;
+  editingTVData = tv || null;
   $("#tv-modal-title").textContent = tv ? t("tv.edit") : t("tv.new");
   $("#tv-name").value = tv ? tv.name : "";
   $("#tv-ip").value = tv ? tv.ip : "";
-  $("#tv-display-mode").value = (tv && tv.displayMode) ? tv.displayMode : "blur-fill";
-  populateMatteSelect($("#tv-matte"));
-  $("#tv-matte").value = (tv && tv.matte) ? tv.matte : "none";
-  $("#tv-bg-color").value = (tv && tv.bgColor) ? tv.bgColor : "#000000";
-  $("#tv-border").value = tv ? (tv.borderPct || 0) : 0;
-  $("#tv-smart-fill").checked = !!(tv && tv.smartFill);
-  populateIntervalSelect($("#tv-interval"));
-  $("#tv-interval").value = String(tv && tv.intervalSeconds ? nearestInterval(tv.intervalSeconds) : DEFAULT_INTERVAL);
-  $("#tv-play-order").value = (tv && tv.playOrder === "random") ? "random" : "sequential";
-  const caps = new Set((tv && tv.captionFields) || []);
-  CAPTION_FIELDS.forEach((k) => { const cb = $("#tv-cap-" + k); if (cb) cb.checked = caps.has(k); });
-  updateTVModeFields();
   const msg = $("#tv-test-msg");
   msg.hidden = true; msg.textContent = ""; msg.className = "setup-msg";
   $("#tv-modal").hidden = false;
   setTimeout(() => $("#tv-name").focus(), 30);
 }
-function closeTVModal() { $("#tv-modal").hidden = true; editingTVId = null; }
+function closeTVModal() { $("#tv-modal").hidden = true; editingTVId = null; editingTVData = null; }
 
 async function saveTV() {
+  const base = editingTVData || {};
   const payload = {
     name: $("#tv-name").value.trim(),
     ip: $("#tv-ip").value.trim(),
-    matte: $("#tv-matte").value,
-    displayMode: $("#tv-display-mode").value,
-    bgColor: $("#tv-bg-color").value,
-    borderPct: Math.max(0, Math.min(40, parseInt($("#tv-border").value, 10) || 0)),
-    smartFill: $("#tv-smart-fill").checked,
-    captionFields: CAPTION_FIELDS.filter((k) => { const cb = $("#tv-cap-" + k); return cb && cb.checked; }),
-    intervalSeconds: parseInt($("#tv-interval").value, 10) || DEFAULT_INTERVAL,
-    playOrder: $("#tv-play-order").value === "random" ? "random" : "sequential",
+    // Preserve the display/playback options (edited on the TV page) so an
+    // identity edit here doesn't reset them. New TVs fall back to defaults.
+    matte: base.matte || "none",
+    displayMode: base.displayMode || "blur-fill",
+    bgColor: base.bgColor || "#000000",
+    borderPct: base.borderPct || 0,
+    smartFill: !!base.smartFill,
+    captionFields: base.captionFields || [],
+    intervalSeconds: base.intervalSeconds || DEFAULT_INTERVAL,
+    playOrder: base.playOrder === "random" ? "random" : "sequential",
+    photoFilter: base.photoFilter || "none",
   };
   if (!payload.name || !payload.ip) { alert(t("alert.nameRootRequired")); return; }
   try {
@@ -1779,6 +2038,22 @@ async function loadInfo() {
       any = true;
       body.appendChild(el("div", { class: "info-row", html: `<span class="info-key">${esc(k)}</span><span class="info-val">${esc(v)}</span>` }));
     });
+
+    // Extra "Details" section: place name and people, shown only when the
+    // photo has indexed metadata available.
+    const people = Array.isArray(info.people) ? info.people : [];
+    if (info.place || people.length) {
+      any = true;
+      body.appendChild(el("div", { class: "info-section", text: t("info.details") }));
+      if (info.place) {
+        body.appendChild(el("div", { class: "info-row", html: `<span class="info-key">${esc(t("info.place"))}</span><span class="info-val">${esc(info.place)}</span>` }));
+      }
+      if (people.length) {
+        const chips = people.map((name) => `<span class="info-chip">${esc(name)}</span>`).join("");
+        body.appendChild(el("div", { class: "info-row", html: `<span class="info-key">${esc(t("info.people"))}</span><span class="info-chips">${chips}</span>` }));
+      }
+    }
+
     if (!any) body.appendChild(el("div", { class: "empty", text: t("info.noExif") }));
   } catch (e) {
     body.innerHTML = `<div class="empty">${esc(t("alert.error", { msg: e.message }))}</div>`;
@@ -2388,6 +2663,7 @@ function jobTypeLabel(type) {
   if (type === "scan") return t("jobs.typeScan");
   if (type === "thumbnails") return t("jobs.typeThumbnails");
   if (type === "cleanup") return t("jobs.typeCleanup");
+  if (type === "playlist-add") return t("jobs.typePlaylistAdd");
   return type;
 }
 
@@ -2855,11 +3131,10 @@ $("#lib-save").addEventListener("click", saveLib);
 $("#user-cancel").addEventListener("click", closeUserModal);
 $("#user-save").addEventListener("click", saveUser);
 
-// Frame TV admin modal
+// Frame TV admin modal (identity only; display options live on the TV page)
 $("#tv-cancel").addEventListener("click", closeTVModal);
 $("#tv-save").addEventListener("click", saveTV);
 $("#tv-test").addEventListener("click", testTV);
-$("#tv-display-mode").addEventListener("change", updateTVModeFields);
 
 // playlist modals (create/rename + add-to-playlist picker)
 $("#playlist-cancel").addEventListener("click", closePlaylistModal);

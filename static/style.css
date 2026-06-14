@@ -648,6 +648,17 @@ body {
 .info-row { display: flex; flex-direction: column; gap: 2px; }
 .info-key { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-hint); }
 .info-val { font-size: 13px; color: var(--text); word-break: break-word; }
+.info-section {
+  margin-top: 8px; padding-top: 12px; border-top: 0.5px solid var(--border);
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.info-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.info-chip {
+  display: inline-block; padding: 3px 9px; border-radius: 999px;
+  background: rgba(255,255,255,0.10); color: var(--text);
+  font-size: 12px; line-height: 1.3; word-break: break-word;
+}
 
 /* slideshow date/info overlay */
 .viewer-overlay {
@@ -1079,19 +1090,83 @@ input.control[type="checkbox"]:focus-visible {
 .tv-panel-body { display: flex; gap: 20px; align-items: flex-start; }
 .tv-panel-info { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .tv-panel .section-title { margin-bottom: 4px; }
+/* Right column: next-image preview stacked above the history list. */
+.tv-panel-side { display: flex; flex-direction: column; gap: 16px; width: 220px; flex-shrink: 0; }
 /* Next-image preview on the right of the status panel. */
-.tv-next { margin: 0; display: flex; flex-direction: column; gap: 6px; width: 160px; flex-shrink: 0; }
+.tv-next { margin: 0; display: flex; flex-direction: column; gap: 6px; width: 100%; flex-shrink: 0; }
 .tv-next-thumb {
-  width: 160px; aspect-ratio: 16/10; object-fit: cover;
+  width: 100%; aspect-ratio: 16/10; object-fit: cover;
   border-radius: var(--radius); border: 0.5px solid var(--border); background: #000;
 }
 .tv-next-name { font-size: 12px; color: var(--text-muted); word-break: break-word; }
 
-/* caption field toggles in the TV modal */
+/* ── TV HISTORY (recently shown, with quick remove) ── */
+.tv-history { display: flex; flex-direction: column; gap: 8px; }
+.tv-history-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 320px; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+.tv-history-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 5px 6px; border-radius: var(--radius);
+  border: 0.5px solid transparent;
+  transition: background 0.12s, border-color 0.12s, opacity 0.2s;
+}
+.tv-history-item:hover { background: rgba(255,255,255,0.04); border-color: var(--border); }
+.tv-history-item.removed { opacity: 0.4; pointer-events: none; }
+.tv-history-item.removed .tv-history-name { text-decoration: line-through; }
+.tv-history-thumb {
+  width: 44px; height: 44px; flex-shrink: 0; border-radius: 5px;
+  object-fit: cover; background: #000; border: 0.5px solid var(--border);
+}
+.tv-history-meta { min-width: 0; flex: 1; }
+.tv-history-name {
+  font-size: 12px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tv-history-time { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.tv-history-remove {
+  flex-shrink: 0; width: 26px; height: 26px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 0.5px solid var(--border-hover); border-radius: 50%;
+  background: rgba(255,255,255,0.05); color: var(--text-muted); cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.tv-history-remove:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+.tv-history-remove:disabled { opacity: 0.4; cursor: default; }
+.tv-history-remove .icon { font-size: 14px; }
+
+/* caption field toggles (TV options) */
 .tv-caption-fields {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin-top: 8px;
 }
 .tv-caption-fields .field.checkbox { margin: 0; }
+
+/* ── INLINE TV OPTIONS (display + playback, on the TV detail card) ── */
+.tv-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px 20px;
+  padding: 16px;
+  border-top: 0.5px solid var(--border);
+  align-items: start;
+}
+.tv-options .tv-opt { margin: 0; }
+.tv-options [hidden] { display: none !important; }
+.tv-opt-wide { grid-column: 1 / -1; }
+.tv-opt-color { display: flex; gap: 14px; }
+.tv-opt-color .field { flex: 1; margin: 0; }
+.tv-opt-color input[type="color"] { width: 100%; height: 34px; padding: 2px; }
+.tv-opt-label { display: block; font-size: 13px; color: var(--text-muted); }
+.tv-options-lock {
+  grid-column: 1 / -1; font-size: 12px; color: var(--text-muted);
+  display: flex; align-items: center; gap: 6px;
+}
+.tv-options--locked { opacity: 0.7; }
+.tv-options--locked select:disabled,
+.tv-options--locked input:disabled { cursor: not-allowed; }
 
 /* ── RESPONSIVE ── */
 @media (max-width: 720px) {
@@ -1106,6 +1181,7 @@ input.control[type="checkbox"]:focus-visible {
   .tv-channel-select { width: 100%; max-width: none; }
   .tv-hero-actions { width: 100%; }
   .tv-panel-body { flex-direction: column; }
-  .tv-next { width: 100%; flex-direction: row; align-items: center; }
-  .tv-next-thumb { width: 120px; }
+  .tv-panel-side { width: 100%; }
+  .tv-next { flex-direction: row; align-items: center; }
+  .tv-next-thumb { width: 120px; flex-shrink: 0; }
 }

@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS tvs (
   smart_fill   INTEGER NOT NULL DEFAULT 0,
   caption_fields TEXT NOT NULL DEFAULT '',
   play_order   TEXT NOT NULL DEFAULT 'sequential',
+  photo_filter TEXT NOT NULL DEFAULT 'none',
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -298,6 +299,7 @@ func migrate(db *sql.DB) error {
 		{"tvs", "smart_fill", `ALTER TABLE tvs ADD COLUMN smart_fill INTEGER NOT NULL DEFAULT 0`},
 		{"tvs", "caption_fields", `ALTER TABLE tvs ADD COLUMN caption_fields TEXT NOT NULL DEFAULT ''`},
 		{"tvs", "play_order", `ALTER TABLE tvs ADD COLUMN play_order TEXT NOT NULL DEFAULT 'sequential'`},
+		{"tvs", "photo_filter", `ALTER TABLE tvs ADD COLUMN photo_filter TEXT NOT NULL DEFAULT 'none'`},
 		{"tv_player_state", "deck", `ALTER TABLE tv_player_state ADD COLUMN deck TEXT NOT NULL DEFAULT ''`},
 	} {
 		if !hasColumn(db, m.table, m.column) {

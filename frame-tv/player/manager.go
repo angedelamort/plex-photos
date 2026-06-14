@@ -22,6 +22,10 @@ const (
 	OrderRandom     = "random"     // play a reshuffled deck, each photo once per pass
 )
 
+// maxHistory is how many recently-shown photos the snapshot keeps, newest
+// first, so the UI can offer a quick "remove from playlist" on each.
+const maxHistory = 10
+
 // photoSource is the slice of library.Store the player needs: read a playlist's
 // ordered photos and resolve a photo token to an absolute file path.
 type photoSource interface {
@@ -33,8 +37,10 @@ type photoSource interface {
 // so tests can inject a fake TV.
 type artConn interface {
 	Upload(data []byte, fileType, matteID string) (string, error)
-	SelectImage(contentID string, show bool) error
+	SelectImageNoWait(contentID string, show bool) error
+	SetPhotoFilter(contentID, filterID string) error
 	DeleteImages(contentIDs ...string) error
+	KeepAlive() error
 	Token() string
 	Close() error
 }
@@ -48,6 +54,14 @@ func defaultDialer(ctx context.Context, ip, token string) (artConn, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// HistoryItem is one recently-shown photo, surfaced so the UI can list the last
+// few frames with a quick "remove from playlist" control.
+type HistoryItem struct {
+	Path    string    `json:"path"`
+	Name    string    `json:"name"`
+	ShownAt time.Time `json:"shownAt"`
 }
 
 // Snapshot is the live status of a TV's swap loop, surfaced to the web UI.
@@ -66,6 +80,8 @@ type Snapshot struct {
 	LastSwapAt  *time.Time `json:"lastSwapAt,omitempty"`
 	NextSwapAt  *time.Time `json:"nextSwapAt,omitempty"`
 	Error       string     `json:"error,omitempty"`
+	// History lists recently-shown photos, newest first, capped at maxHistory.
+	History []HistoryItem `json:"history,omitempty"`
 	// Resume hints for a stopped TV: whether saved progress exists, which
 	// playlist it belongs to, and that playlist's photo count, so the UI can
 	// offer "Resume (n/total)" versus a fresh "Play".
@@ -348,8 +364,29 @@ func (m *Manager) run(ctx context.Context, r *runner, tvID, owner, playlistID st
 	}()
 
 	pos := startPos
-	corner := 0     // rotates per prepared image to avoid uneven panel wear
-	var stg *staged // next image, already uploaded and ready to select
+	corner := 0               // rotates per prepared image to avoid uneven panel wear
+	var stg *staged           // next image, already uploaded and ready to select
+	var history []HistoryItem // recently-shown photos, newest first
+
+	// conn is held open across swap cycles. An image must be selected on the
+	// same connection that uploaded it: selecting content that was ingested
+	// over a since-closed socket makes the TV's Art app error out (code 40000).
+	// It is kept alive through the idle interval and only reopened after a drop.
+	var conn artConn
+	defer func() {
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}()
+	// dropConn tears down the live connection and discards any staged image,
+	// since staged content is bound to the connection that uploaded it.
+	dropConn := func() {
+		if conn != nil {
+			_ = conn.Close()
+			conn = nil
+		}
+		stg = nil
+	}
 
 	// deck is the playback order for the current playlist: identical to the
 	// playlist for sequential mode, a shuffled copy for random. It is rebuilt
@@ -432,7 +469,7 @@ func (m *Manager) run(ctx context.Context, r *runner, tvID, owner, playlistID st
 			s.IntervalS = tvCfg.IntervalS
 		})
 
-		conn, err := m.connect(ctx, tvCfg)
+		conn, err = m.ensureConn(ctx, conn, tvCfg)
 		if err != nil {
 			m.fail(r, err.Error())
 			if !sleep(ctx, r, backoff(tvCfg)) {
@@ -448,8 +485,7 @@ func (m *Manager) run(ctx context.Context, r *runner, tvID, owner, playlistID st
 		if stg == nil || stg.pos != pos || stg.path != cur.Path || stg.fp != fp {
 			contentID, err := m.prepareUpload(r, conn, tvCfg, cur, corner, fp, true)
 			if err != nil {
-				conn.Close()
-				stg = nil
+				dropConn()
 				m.fail(r, err.Error())
 				if !sleep(ctx, r, backoff(tvCfg)) {
 					return
@@ -461,10 +497,14 @@ func (m *Manager) run(ctx context.Context, r *runner, tvID, owner, playlistID st
 		}
 
 		// The swap itself: just point the TV at the already-uploaded image.
+		// Fire-and-forget: Frame firmware does not reliably acknowledge
+		// select_image (it stays silent for matted images), and a blocking read
+		// that times out poisons the socket. We only treat a websocket write
+		// failure as an error (a genuinely dead connection); the displayed
+		// frame is verified implicitly by the next KeepAlive.
 		r.update(func(s *Snapshot) { s.Step = "selecting" })
-		if err := conn.SelectImage(stg.contentID, true); err != nil {
-			conn.Close()
-			stg = nil
+		if err := conn.SelectImageNoWait(stg.contentID, true); err != nil {
+			dropConn()
 			m.fail(r, fmt.Sprintf("select: %v", err))
 			if !sleep(ctx, r, backoff(tvCfg)) {
 				return
@@ -483,12 +523,21 @@ func (m *Manager) run(ctx context.Context, r *runner, tvID, owner, playlistID st
 			Position: pos, CurrentPath: cur.Path, CurrentContent: stg.contentID, LastSwapAt: &now,
 		})
 
+		// Record the just-shown photo at the front of the history ring so the
+		// UI can list the last few frames and offer a quick remove on each.
+		history = append([]HistoryItem{{Path: cur.Path, Name: displayName(cur), ShownAt: now}}, history...)
+		if len(history) > maxHistory {
+			history = history[:maxHistory]
+		}
+
 		nextSwap := now.Add(interval)
+		hist := append([]HistoryItem(nil), history...)
 		r.update(func(s *Snapshot) {
 			s.Step = "waiting"
 			s.Error = ""
 			s.LastSwapAt = &now
 			s.NextSwapAt = &nextSwap
+			s.History = hist
 		})
 
 		// Advance, then pre-upload the next image on this same connection so it
@@ -510,29 +559,50 @@ func (m *Manager) run(ctx context.Context, r *runner, tvID, owner, playlistID st
 		stg = nil
 		nphoto := deck[pos]
 		if contentID, perr := m.prepareUpload(r, conn, tvCfg, nphoto, corner, fp, false); perr != nil {
+			// A failed preload can leave the socket mid-protocol; drop it so the
+			// next cycle reconnects and uploads inline rather than reusing a
+			// possibly-desynced connection.
 			log.Printf("frame-tv: preload next photo: %v", perr)
+			dropConn()
 		} else {
 			stg = &staged{pos: pos, path: nphoto.Path, contentID: contentID, fp: fp}
 			corner = (corner + 1) % 4
 		}
-		conn.Close()
 
-		if !sleep(ctx, r, interval) {
+		// Hold the connection open through the idle interval (pinging so the TV
+		// doesn't drop the socket) so the next swap selects the preloaded image
+		// on the same connection that uploaded it. If the connection dies
+		// mid-wait, discard it and the staged image and reconnect next cycle.
+		if conn != nil {
+			cont, alive := sleepKeepAlive(ctx, r, conn, interval)
+			if !alive {
+				dropConn()
+			}
+			if !cont {
+				return
+			}
+		} else if !sleep(ctx, r, interval) {
 			return
 		}
 	}
 }
 
-// connect opens a TV connection and persists any auth token the TV issues.
-func (m *Manager) connect(ctx context.Context, tvCfg *TV) (artConn, error) {
-	conn, err := m.dial(ctx, tvCfg.IP, tvCfg.Token)
+// ensureConn returns conn if it is still open, otherwise dials a fresh art
+// connection and persists any auth token the TV issues. Reusing one connection
+// across swaps matters: an image can only be reliably selected on the same
+// connection that uploaded it.
+func (m *Manager) ensureConn(ctx context.Context, conn artConn, tvCfg *TV) (artConn, error) {
+	if conn != nil {
+		return conn, nil
+	}
+	c, err := m.dial(ctx, tvCfg.IP, tvCfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("connect TV: %w", err)
 	}
-	if tok := conn.Token(); tok != "" && tok != tvCfg.Token {
+	if tok := c.Token(); tok != "" && tok != tvCfg.Token {
 		_ = m.store.SetToken(tvCfg.ID, tok)
 	}
-	return conn, nil
+	return c, nil
 }
 
 // prepareUpload composes a photo for the panel and uploads it to the TV,
@@ -582,7 +652,25 @@ func (m *Manager) prepareUpload(r *runner, conn artConn, tvCfg *TV, photo librar
 	if err != nil {
 		return "", fmt.Errorf("upload: %w", err)
 	}
+
+	// Apply the Art Mode post-process filter (the Frame's "painterly" effect)
+	// here — while the image is still off-screen, before it is selected — so it
+	// appears already filtered with no visible "develop the effect live"
+	// transition. A filter failure is non-fatal: show the unfiltered photo
+	// rather than failing the whole swap.
+	if hasPhotoFilter(tvCfg.PhotoFilter) {
+		if err := conn.SetPhotoFilter(contentID, tvCfg.PhotoFilter); err != nil {
+			log.Printf("frame-tv: photo filter %q on %s: %v", tvCfg.PhotoFilter, displayName(photo), err)
+		}
+	}
 	return contentID, nil
+}
+
+// hasPhotoFilter reports whether a stored filter value selects an actual effect
+// (anything other than empty or "none", case-insensitive).
+func hasPhotoFilter(f string) bool {
+	f = strings.TrimSpace(f)
+	return f != "" && !strings.EqualFold(f, "none")
 }
 
 // buildDeck returns the playback order for a playlist. Sequential mode returns
@@ -660,6 +748,7 @@ func displayFingerprint(tvCfg *TV) string {
 		fmt.Sprintf("%d", tvCfg.BorderPct),
 		tvCfg.Matte,
 		strings.Join(tvCfg.CaptionFields, ","),
+		tvCfg.PhotoFilter,
 	}, "|")
 }
 
@@ -683,6 +772,44 @@ func sleep(ctx context.Context, r *runner, d time.Duration) bool {
 		return true
 	case <-t.C:
 		return true
+	}
+}
+
+// sleepKeepAlive waits for d like sleep, but periodically pings the TV so the
+// art channel's idle socket — which Frame firmware drops after roughly a minute
+// of silence — stays open for the next swap. It returns cont=false when the
+// loop should exit (ctx cancelled) and alive=false when a ping failed, which
+// signals the caller to drop and reopen the connection.
+func sleepKeepAlive(ctx context.Context, r *runner, conn artConn, d time.Duration) (cont, alive bool) {
+	alive = true
+	const pingEvery = 30 * time.Second
+	deadline := time.Now().Add(d)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return true, alive
+		}
+		wait := pingEvery
+		if remaining < wait {
+			wait = remaining
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return false, alive
+		case <-r.skip:
+			t.Stop()
+			return true, alive
+		case <-t.C:
+		}
+		if alive && time.Until(deadline) > 0 {
+			if err := conn.KeepAlive(); err != nil {
+				// Stop pinging a dead socket but keep waiting out the interval;
+				// the photo is already on screen, so this is not a swap failure.
+				alive = false
+			}
+		}
 	}
 }
 

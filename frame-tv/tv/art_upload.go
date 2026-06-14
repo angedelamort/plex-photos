@@ -215,6 +215,24 @@ func (c *ArtClient) SelectImage(contentID string, show bool) error {
 	return err
 }
 
+// SelectImageNoWait asks the TV to display content_id without waiting for a
+// confirmation frame. Frame firmware does not reliably acknowledge select_image
+// (in particular for matted images it sends nothing), and because a timed-out
+// gorilla read poisons the socket for all later reads, a blocking select would
+// both hang and break the connection. Emitting fire-and-forget sidesteps both:
+// any later request (e.g. KeepAlive) simply skips the stale select reply.
+func (c *ArtClient) SelectImageNoWait(contentID string, show bool) error {
+	id := uuid.NewString()
+	return c.emit(map[string]any{
+		"request":     "select_image",
+		"id":          id,
+		"request_id":  id,
+		"category_id": nil,
+		"content_id":  contentID,
+		"show":        show,
+	})
+}
+
 // ChangeMatte re-mattes an already-uploaded artwork. matteID is a
 // "<shape>_<color>" value or MatteNone.
 func (c *ArtClient) ChangeMatte(contentID, matteID string) error {
@@ -226,6 +244,71 @@ func (c *ArtClient) ChangeMatte(contentID, matteID string) error {
 		"matte_id":   matteID,
 	}, uploadTimeout)
 	return err
+}
+
+// PhotoFilter is one Art Mode post-processing effect — the same "effects" the
+// SmartThings app applies to a photo (e.g. a painterly / canvas / ink look).
+// Applied with SetPhotoFilter after an image is uploaded.
+type PhotoFilter struct {
+	ID   string
+	Name string
+}
+
+// GetPhotoFilterList queries the post-processing filters this TV supports.
+func (c *ArtClient) GetPhotoFilterList() ([]PhotoFilter, error) {
+	resp, err := c.request("get_photo_filter_list", nil, uploadTimeout)
+	if err != nil {
+		return nil, err
+	}
+	// Firmware differs on the key name; accept either.
+	raw, ok := resp["filter_list"]
+	if !ok {
+		raw, ok = resp["photo_filter_list"]
+	}
+	if !ok {
+		return nil, fmt.Errorf("response has no filter_list: %v", resp)
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return nil, fmt.Errorf("unexpected filter_list type %T", raw)
+	}
+
+	var objs []map[string]any
+	if err := json.Unmarshal([]byte(s), &objs); err != nil {
+		return nil, fmt.Errorf("decode filter_list: %w", err)
+	}
+	out := make([]PhotoFilter, 0, len(objs))
+	for _, o := range objs {
+		id := firstString(o, "filter_id", "filterId", "id")
+		if id == "" {
+			continue
+		}
+		out = append(out, PhotoFilter{ID: id, Name: firstString(o, "filter_name", "filterName", "name")})
+	}
+	return out, nil
+}
+
+// SetPhotoFilter applies a post-processing filter (from GetPhotoFilterList) to
+// an already-uploaded artwork. filterID of "" or "none" clears the effect.
+func (c *ArtClient) SetPhotoFilter(contentID, filterID string) error {
+	if filterID == "" {
+		filterID = "none"
+	}
+	_, err := c.request("set_photo_filter", map[string]any{
+		"content_id": contentID,
+		"filter_id":  filterID,
+	}, uploadTimeout)
+	return err
+}
+
+// firstString returns the first non-empty string value among the given keys.
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s := asString(m[k]); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // MatteList describes the matte shapes and colors a TV supports. Matte ids

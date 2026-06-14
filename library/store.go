@@ -733,9 +733,10 @@ const (
 
 // Job type values.
 const (
-	JobTypeScan      = "scan"
-	JobTypeThumbnail = "thumbnails"
-	JobTypeCleanup   = "cleanup"
+	JobTypeScan        = "scan"
+	JobTypeThumbnail   = "thumbnails"
+	JobTypeCleanup     = "cleanup"
+	JobTypePlaylistAdd = "playlist-add"
 )
 
 // maxJobHistory caps how many finished job rows are retained. Running jobs are

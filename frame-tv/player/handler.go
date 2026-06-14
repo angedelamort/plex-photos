@@ -41,14 +41,28 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// statusView merges a TV's config with its live snapshot for the UI.
+// statusView merges a TV's config with its live snapshot for the UI. It exposes
+// the full set of display/playback options so the TV detail page can render
+// them inline (and edit them while stopped) without an extra admin round-trip.
 func (h *Handler) statusView(t *TV) map[string]any {
 	snap, _ := h.mgr.Status(t.ID)
+	caps := t.CaptionFields
+	if caps == nil {
+		caps = []string{}
+	}
 	return map[string]any{
 		"id":              t.ID,
 		"name":            t.Name,
+		"ip":              t.IP,
 		"matte":           t.Matte,
 		"intervalSeconds": t.IntervalS,
+		"displayMode":     t.DisplayMode,
+		"bgColor":         t.BgColor,
+		"borderPct":       t.BorderPct,
+		"smartFill":       t.SmartFill,
+		"captionFields":   caps,
+		"playOrder":       t.PlayOrder,
+		"photoFilter":     t.PhotoFilter,
 		"status":          snap,
 	}
 }
@@ -76,10 +90,28 @@ type tvInput struct {
 	SmartFill       bool     `json:"smartFill"`
 	CaptionFields   []string `json:"captionFields"`
 	PlayOrder       string   `json:"playOrder"`
+	PhotoFilter     string   `json:"photoFilter"`
 }
 
 var validDisplayModes = map[string]bool{
 	ModeBlurFill: true, ModeFill: true, ModeFitColor: true, ModeTVMatte: true,
+}
+
+// validPhotoFilters maps a lowercased filter id to its canonical Frame casing.
+// These are the Art Mode post-process effects The Frame exposes; "none" means
+// no effect. Unknown values normalize to "none".
+var validPhotoFilters = map[string]string{
+	"none": "none", "aqua": "Aqua", "artdeco": "ArtDeco", "ink": "Ink",
+	"wash": "Wash", "pastel": "Pastel", "feuve": "Feuve",
+}
+
+// normalizePhotoFilter resolves an incoming filter id to its canonical casing,
+// defaulting to "none" for empty/unknown values.
+func normalizePhotoFilter(f string) string {
+	if canon, ok := validPhotoFilters[strings.ToLower(strings.TrimSpace(f))]; ok {
+		return canon
+	}
+	return "none"
 }
 
 var validCaptionFields = map[string]bool{
@@ -99,6 +131,7 @@ func (in *tvInput) normalize() (TV, error) {
 		BorderPct:   in.BorderPct,
 		SmartFill:   in.SmartFill,
 		PlayOrder:   strings.TrimSpace(in.PlayOrder),
+		PhotoFilter: normalizePhotoFilter(in.PhotoFilter),
 	}
 	if tv.Name == "" {
 		return TV{}, errors.New("name is required")
@@ -189,6 +222,72 @@ func (h *Handler) UpdateTV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+// tvSettingsInput carries only the display/playback options edited inline from
+// the TV detail page. Name and IP are intentionally omitted: those identify the
+// hardware and stay admin-only via the TV modal.
+type tvSettingsInput struct {
+	Matte           string   `json:"matte"`
+	IntervalSeconds int      `json:"intervalSeconds"`
+	DisplayMode     string   `json:"displayMode"`
+	BgColor         string   `json:"bgColor"`
+	BorderPct       int      `json:"borderPct"`
+	SmartFill       bool     `json:"smartFill"`
+	CaptionFields   []string `json:"captionFields"`
+	PlayOrder       string   `json:"playOrder"`
+	PhotoFilter     string   `json:"photoFilter"`
+}
+
+// UpdateTVSettings updates a TV's display/playback options. It is available to
+// any authenticated user (the detail page is the user-facing control surface),
+// but preserves the admin-set name and IP. New settings take effect the next
+// time the TV starts playing.
+func (h *Handler) UpdateTVSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	existing, err := h.store.Get(id)
+	if errors.Is(err, ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "tv not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var in tvSettingsInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	// Reuse the full input validation, carrying over the existing identity.
+	full := tvInput{
+		Name:            existing.Name,
+		IP:              existing.IP,
+		Matte:           in.Matte,
+		IntervalSeconds: in.IntervalSeconds,
+		DisplayMode:     in.DisplayMode,
+		BgColor:         in.BgColor,
+		BorderPct:       in.BorderPct,
+		SmartFill:       in.SmartFill,
+		CaptionFields:   in.CaptionFields,
+		PlayOrder:       in.PlayOrder,
+		PhotoFilter:     in.PhotoFilter,
+	}
+	tv, err := full.normalize()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	t, err := h.store.Update(id, tv)
+	if errors.Is(err, ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "tv not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, h.statusView(t))
 }
 
 // DeleteTV stops playback and removes a TV.

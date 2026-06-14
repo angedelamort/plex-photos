@@ -70,13 +70,16 @@ flags. Re-verify the tree is clean (`git status --porcelain`) after pushing.
 
 ## Step 2: Tag
 
-Create an annotated tag for the chosen version (default `<next>` from the wizard):
+Create an annotated tag for the chosen version (default `<next>` from the wizard),
+then push it to the remote so the release is published:
 
 ```bash
 git tag -a v1.3.0 -m "Release v1.3.0"
+git push origin v1.3.0
 ```
 
-Do NOT push the tag unless the user explicitly asks.
+Pushing the tag is a standard part of the release. Only skip the push if the
+user explicitly asks you to keep the tag local.
 
 ## Step 3: Build the release artifact
 
@@ -147,4 +150,6 @@ Save-GzImage "angedelamort/plex-photos:latest" "plex-photos-latest"
 
 - Tags use the `vMAJOR.MINOR.PATCH` (semver) format with a leading `v`.
 - This skill defaults to a **minor** bump; the wizard lets the user override.
-- Never push to remote or force-push as part of this skill unless asked.
+- The release tag is pushed to the remote by default (Step 2). The `main`
+  branch is also pushed when committing a dirty tree (Step 1b). Never
+  force-push or rewrite shared history as part of this skill.

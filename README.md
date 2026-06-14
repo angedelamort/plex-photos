@@ -174,6 +174,26 @@ configured, so complete first-run setup on your local network.
 
 ## Roadmap (V2)
 
+### Search
+
+A search box to find photos across every library the user can access, querying
+the indexed metadata rather than scanning the filesystem on each request. The
+`photo_meta` / `photo_people` index already populated at scan time (capture
+date, dimensions, GPS, geocoded city/country, person tags) makes this feasible
+without re-reading EXIF per query.
+
+Sketch:
+
+- A search endpoint that filters indexed photos by free text (filename, place,
+  person) and structured facets (date range, camera/lens, has-GPS, orientation),
+  scoped to the caller's accessible libraries.
+- Tokenize person/place names for partial matches; consider SQLite FTS5 for the
+  text columns if simple `LIKE` proves too limited.
+- A search affordance in the header that opens a results grid reusing the
+  existing photo tiles and viewer, plus an "open as slideshow" action.
+- Naturally complements smart collections below (a saved search ≈ a rule-based
+  collection).
+
 ### Photo playlists
 
 A user-curated, ordered set of individual **photos** (as opposed to album-level
@@ -200,8 +220,9 @@ optionally combined with manual playlists.
 Sketch:
 
 - Persist a rule definition (e.g. JSON criteria) per smart collection.
-- Evaluate rules at query time over indexed photo metadata (EXIF would need to
-  be scanned into the DB, which today is read on demand).
+- Evaluate rules at query time over the indexed photo metadata (`photo_meta` /
+  `photo_people`: capture date, GPS, geocoded place, dimensions, person tags),
+  which is already populated during scans.
 - Surface them alongside playlists in the UI.
 
 ## License

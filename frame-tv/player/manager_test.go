@@ -41,6 +41,8 @@ type fakeConn struct {
 	mu       sync.Mutex
 	uploads  int
 	selects  int
+	filters  int
+	lastFilt string
 	deleted  []string
 	lastSel  string
 	dialErr  error
@@ -59,11 +61,18 @@ func (c *fakeConn) Upload(data []byte, fileType, matteID string) (string, error)
 	c.contents = append(c.contents, id)
 	return id, nil
 }
-func (c *fakeConn) SelectImage(contentID string, show bool) error {
+func (c *fakeConn) SelectImageNoWait(contentID string, show bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.selects++
 	c.lastSel = contentID
+	return nil
+}
+func (c *fakeConn) SetPhotoFilter(contentID, filterID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.filters++
+	c.lastFilt = filterID
 	return nil
 }
 func (c *fakeConn) DeleteImages(ids ...string) error {
@@ -72,6 +81,7 @@ func (c *fakeConn) DeleteImages(ids ...string) error {
 	c.deleted = append(c.deleted, ids...)
 	return nil
 }
+func (c *fakeConn) KeepAlive() error { return nil }
 func (c *fakeConn) Token() string    { return "tok-xyz" }
 func (c *fakeConn) Close() error     { return nil }
 func (c *fakeConn) uploadCount() int { c.mu.Lock(); defer c.mu.Unlock(); return c.uploads }

@@ -186,6 +186,7 @@ func NewMux(d Deps) *http.ServeMux {
 		// User: dashboard + playback control.
 		mux.Handle("GET /api/tvs", d.Mw.RequireAuth(http.HandlerFunc(d.TV.ListTVs)))
 		mux.Handle("GET /api/tv/{id}/status", d.Mw.RequireAuth(http.HandlerFunc(d.TV.TVStatus)))
+		mux.Handle("PUT /api/tv/{id}/settings", d.Mw.RequireAuth(http.HandlerFunc(d.TV.UpdateTVSettings)))
 		mux.Handle("POST /api/tv/{id}/play", d.Mw.RequireAuth(http.HandlerFunc(d.TV.PlayTV)))
 		mux.Handle("POST /api/tv/{id}/resume", d.Mw.RequireAuth(http.HandlerFunc(d.TV.ResumeTV)))
 		mux.Handle("POST /api/tv/{id}/stop", d.Mw.RequireAuth(http.HandlerFunc(d.TV.StopTV)))
