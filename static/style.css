@@ -371,6 +371,10 @@ body {
   .hero-info { align-self: stretch; height: auto; }
   .hero-poster { width: 130px; }
   .hero-title { font-size: 28px; }
+
+  /* Stack the photo caption on its own line above the action buttons. */
+  .viewer .viewer-toolbar { flex-wrap: wrap; justify-content: center; row-gap: 8px; }
+  .viewer .viewer-caption { flex: 1 0 100%; text-align: center; }
 }
 
 /* ── DROPDOWN MENU ── */
@@ -425,6 +429,15 @@ body {
 .btn.danger { color: var(--danger); border-color: rgba(224,92,92,0.2); }
 .btn.sm { padding: 5px 10px; font-size: 12px; }
 .btn .icon { font-size: 14px; }
+
+/* Split button: a single control with two sections (e.g. play | settings) */
+.btn-split { display: inline-flex; align-items: stretch; }
+.btn-split .btn { border-radius: 0; }
+.btn-split .btn-split-main { border-top-left-radius: var(--radius); border-bottom-left-radius: var(--radius); }
+.btn-split .btn-split-side {
+  border-top-right-radius: var(--radius); border-bottom-right-radius: var(--radius);
+  border-left-width: 0; padding-left: 10px; padding-right: 10px;
+}
 
 /* ── ADMIN ── */
 .lib-row {

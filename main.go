@@ -58,6 +58,12 @@ func main() {
 	galleryHandler := library.NewHandler(store, scanner, thumbs, artDir)
 	galleryHandler.SetVersion(version)
 
+	// Build the reverse-geocoding index in the background at startup. Parsing
+	// the embedded Natural Earth datasets is expensive, so doing it here keeps
+	// the first on-demand place lookup (the photo info panel) from blocking on
+	// it and leaving the UI stuck on "loading…".
+	library.WarmGeocoder()
+
 	// Frame TV: manage configured TVs and run the per-TV photo swap loop.
 	tvStore := player.NewStore(db)
 	tvManager := player.NewManager(tvStore, store)

@@ -838,9 +838,11 @@ func (s *Store) UpsertPhotoMeta(m PhotoMeta) error {
 	if _, err := tx.Exec(`
 		INSERT INTO photo_meta
 		    (photo_path, library_id, taken_at, year, lat, lon, has_gps,
-		     place_city, place_country, width, height, orientation,
-		     has_sidecar, file_mtime, file_size, indexed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		     place_city, place_province, place_country,
+		     camera, lens, exposure, aperture, iso, focal_length,
+		     width, height, orientation,
+		     has_sidecar, file_mtime, file_size, meta_version, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(photo_path) DO UPDATE SET
 		    library_id = excluded.library_id,
 		    taken_at = excluded.taken_at,
@@ -849,19 +851,29 @@ func (s *Store) UpsertPhotoMeta(m PhotoMeta) error {
 		    lon = excluded.lon,
 		    has_gps = excluded.has_gps,
 		    place_city = excluded.place_city,
+		    place_province = excluded.place_province,
 		    place_country = excluded.place_country,
+		    camera = excluded.camera,
+		    lens = excluded.lens,
+		    exposure = excluded.exposure,
+		    aperture = excluded.aperture,
+		    iso = excluded.iso,
+		    focal_length = excluded.focal_length,
 		    width = excluded.width,
 		    height = excluded.height,
 		    orientation = excluded.orientation,
 		    has_sidecar = excluded.has_sidecar,
 		    file_mtime = excluded.file_mtime,
 		    file_size = excluded.file_size,
+		    meta_version = excluded.meta_version,
 		    indexed_at = CURRENT_TIMESTAMP`,
 		m.PhotoPath, nullIfEmpty(m.LibraryID), nullTime(m.TakenAt), nullIfZero(m.Year),
 		m.Lat, m.Lon, boolToInt(m.HasGPS),
-		nullIfEmpty(m.PlaceCity), nullIfEmpty(m.PlaceCountry),
+		nullIfEmpty(m.PlaceCity), nullIfEmpty(m.PlaceProvince), nullIfEmpty(m.PlaceCountry),
+		nullIfEmpty(m.Camera), nullIfEmpty(m.Lens), nullIfEmpty(m.Exposure),
+		nullIfEmpty(m.Aperture), nullIfEmpty(m.ISO), nullIfEmpty(m.FocalLength),
 		nullIfZero(m.Width), nullIfZero(m.Height), nullIfEmpty(m.Orientation),
-		boolToInt(m.HasSidecar), m.FileMtime, m.FileSize); err != nil {
+		boolToInt(m.HasSidecar), m.FileMtime, m.FileSize, m.MetaVersion); err != nil {
 		return err
 	}
 
@@ -887,15 +899,21 @@ func (s *Store) GetPhotoMeta(photoPath string) (*PhotoMeta, error) {
 	var takenAt sql.NullTime
 	var year, width, height sql.NullInt64
 	var hasGPS, hasSidecar int
-	var city, country, orient, libID sql.NullString
+	var city, province, country, orient, libID sql.NullString
+	var camera, lens, exposure, aperture, iso, focal sql.NullString
+	var metaVersion sql.NullInt64
 	err := s.db.QueryRow(`
 		SELECT photo_path, COALESCE(library_id, ''), taken_at, year, lat, lon, has_gps,
-		       place_city, place_country, width, height, orientation, has_sidecar,
-		       COALESCE(file_mtime, 0), COALESCE(file_size, 0)
+		       place_city, place_province, place_country,
+		       camera, lens, exposure, aperture, iso, focal_length,
+		       width, height, orientation, has_sidecar,
+		       COALESCE(file_mtime, 0), COALESCE(file_size, 0), COALESCE(meta_version, 0)
 		FROM photo_meta WHERE photo_path = ?`, photoPath).
 		Scan(&m.PhotoPath, &libID, &takenAt, &year, &m.Lat, &m.Lon, &hasGPS,
-			&city, &country, &width, &height, &orient, &hasSidecar,
-			&m.FileMtime, &m.FileSize)
+			&city, &province, &country,
+			&camera, &lens, &exposure, &aperture, &iso, &focal,
+			&width, &height, &orient, &hasSidecar,
+			&m.FileMtime, &m.FileSize, &metaVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -912,7 +930,15 @@ func (s *Store) GetPhotoMeta(photoPath string) (*PhotoMeta, error) {
 	m.HasGPS = hasGPS != 0
 	m.HasSidecar = hasSidecar != 0
 	m.PlaceCity = city.String
+	m.PlaceProvince = province.String
 	m.PlaceCountry = country.String
+	m.Camera = camera.String
+	m.Lens = lens.String
+	m.Exposure = exposure.String
+	m.Aperture = aperture.String
+	m.ISO = iso.String
+	m.FocalLength = focal.String
+	m.MetaVersion = int(metaVersion.Int64)
 	m.Orientation = orient.String
 
 	people, err := s.photoPeople(photoPath)
@@ -940,19 +966,21 @@ func (s *Store) photoPeople(photoPath string) ([]string, error) {
 	return out, rows.Err()
 }
 
-// PhotoMetaStat returns the file mtime and size recorded for a photo the last
-// time it was indexed. ok is false when the photo has no row yet, so the scan
-// hook knows it must (re)extract.
-func (s *Store) PhotoMetaStat(photoPath string) (mtime, size int64, ok bool, err error) {
-	err = s.db.QueryRow(`SELECT COALESCE(file_mtime, 0), COALESCE(file_size, 0) FROM photo_meta WHERE photo_path = ?`, photoPath).
-		Scan(&mtime, &size)
+// PhotoMetaStat returns the file mtime, size, and meta_version recorded for a
+// photo the last time it was indexed. ok is false when the photo has no row
+// yet, so the scan hook knows it must (re)extract. The version lets the scan
+// re-index rows written by an older extractor even when the file is unchanged.
+func (s *Store) PhotoMetaStat(photoPath string) (mtime, size int64, version int, ok bool, err error) {
+	var v sql.NullInt64
+	err = s.db.QueryRow(`SELECT COALESCE(file_mtime, 0), COALESCE(file_size, 0), COALESCE(meta_version, 0) FROM photo_meta WHERE photo_path = ?`, photoPath).
+		Scan(&mtime, &size, &v)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, false, nil
+		return 0, 0, 0, false, nil
 	}
 	if err != nil {
-		return 0, 0, false, err
+		return 0, 0, 0, false, err
 	}
-	return mtime, size, true, nil
+	return mtime, size, int(v.Int64), true, nil
 }
 
 func boolToInt(b bool) int {

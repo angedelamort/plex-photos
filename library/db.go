@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -167,14 +168,22 @@ CREATE TABLE IF NOT EXISTS photo_meta (
   lat           REAL,
   lon           REAL,
   has_gps       INTEGER NOT NULL DEFAULT 0,
-  place_city    TEXT,
-  place_country TEXT,
+  place_city     TEXT,
+  place_province TEXT,
+  place_country  TEXT,
+  camera         TEXT,
+  lens           TEXT,
+  exposure       TEXT,
+  aperture       TEXT,
+  iso            TEXT,
+  focal_length   TEXT,
   width         INTEGER,
   height        INTEGER,
   orientation   TEXT,
   has_sidecar   INTEGER NOT NULL DEFAULT 0,
   file_mtime    INTEGER,
   file_size     INTEGER,
+  meta_version  INTEGER NOT NULL DEFAULT 0,
   indexed_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -236,13 +245,26 @@ CREATE INDEX IF NOT EXISTS idx_photo_people_name ON photo_people(name);
 // enabling foreign keys and applying the schema migrations.
 func OpenDB(dataPath string) (*sql.DB, error) {
 	dbPath := filepath.Join(dataPath, "plex-photos.db")
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", dbPath)
+	// WAL lets readers run concurrently with a single writer, so browsing the UI
+	// stays responsive while a library scan writes metadata. synchronous=NORMAL
+	// is the recommended, durable pairing for WAL (only an OS/power crash can
+	// lose the last transaction). busy_timeout retries instead of failing when a
+	// second writer briefly contends.
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		dbPath,
+	)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	db.SetMaxOpenConns(1) // SQLite: serialize writes to avoid "database is locked".
+	// WAL supports one writer + many concurrent readers. A small pool lets reads
+	// proceed while a scan writes; SQLite still allows only one writer at a time,
+	// and any brief writer collision is absorbed by busy_timeout above.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
@@ -301,6 +323,14 @@ func migrate(db *sql.DB) error {
 		{"tvs", "play_order", `ALTER TABLE tvs ADD COLUMN play_order TEXT NOT NULL DEFAULT 'sequential'`},
 		{"tvs", "photo_filter", `ALTER TABLE tvs ADD COLUMN photo_filter TEXT NOT NULL DEFAULT 'none'`},
 		{"tv_player_state", "deck", `ALTER TABLE tv_player_state ADD COLUMN deck TEXT NOT NULL DEFAULT ''`},
+		{"photo_meta", "place_province", `ALTER TABLE photo_meta ADD COLUMN place_province TEXT`},
+		{"photo_meta", "camera", `ALTER TABLE photo_meta ADD COLUMN camera TEXT`},
+		{"photo_meta", "lens", `ALTER TABLE photo_meta ADD COLUMN lens TEXT`},
+		{"photo_meta", "exposure", `ALTER TABLE photo_meta ADD COLUMN exposure TEXT`},
+		{"photo_meta", "aperture", `ALTER TABLE photo_meta ADD COLUMN aperture TEXT`},
+		{"photo_meta", "iso", `ALTER TABLE photo_meta ADD COLUMN iso TEXT`},
+		{"photo_meta", "focal_length", `ALTER TABLE photo_meta ADD COLUMN focal_length TEXT`},
+		{"photo_meta", "meta_version", `ALTER TABLE photo_meta ADD COLUMN meta_version INTEGER NOT NULL DEFAULT 0`},
 	} {
 		if !hasColumn(db, m.table, m.column) {
 			if _, err := db.Exec(m.ddl); err != nil {

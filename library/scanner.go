@@ -344,8 +344,9 @@ func (sc *Scanner) indexPhotoMeta(libraryID, rel string) {
 		return
 	}
 	mtime, size := fi.ModTime().Unix(), fi.Size()
-	if pm, ps, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok && pm == mtime && ps == size {
-		return // unchanged since last index
+	if pm, ps, pv, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok &&
+		pm == mtime && ps == size && pv == photoMetaVersion {
+		return // unchanged since last index, and indexed at the current version
 	}
 
 	m := extractPhotoMeta(abs)

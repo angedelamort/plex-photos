@@ -865,38 +865,52 @@ func (h *Handler) Exif(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "no access")
 		return
 	}
+
+	// Fast path: when a photo is fully indexed (at the current extractor
+	// version) the whole panel comes from the DB, so we never touch the file.
+	// photo_meta is keyed by the canonical URL token (AbsToURLPath), the same
+	// form the scanner stores. Rows indexed by an older extractor (or not
+	// indexed at all) fall through to the on-demand disk read below until the
+	// next scan backfills them.
+	m, _ := h.store.GetPhotoMeta(AbsToURLPath(full))
+	if m != nil && m.MetaVersion >= photoMetaVersion {
+		resp := exifResponse{
+			ExifInfo: m.toExifInfo(),
+			People:   m.People,
+			Place:    joinPlace(m.PlaceCity, m.PlaceProvince, m.PlaceCountry),
+		}
+		if resp.Place == "" && m.HasGPS {
+			if place, ok := PlaceNameIfReady(m.Lat, m.Lon); ok {
+				resp.Place = place
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Slow path: read EXIF from the file for photos not yet (fully) indexed.
 	info, err := ReadExif(full)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
 	resp := exifResponse{ExifInfo: info}
-
-	// Layer in scan-indexed metadata (people, geocoded place) when present.
-	if m, err := h.store.GetPhotoMeta(full); err == nil && m != nil {
+	if m != nil {
 		resp.People = m.People
-		resp.Place = joinPlace(m.PlaceCity, m.PlaceCountry)
+		resp.Place = joinPlace(m.PlaceCity, m.PlaceProvince, m.PlaceCountry)
 	}
 	// Fall back to on-demand reverse geocoding for photos that have GPS but
-	// were not indexed (or were indexed before geocoding was available).
+	// were not indexed (or were indexed before geocoding was available). This is
+	// non-blocking: if the geocoding index is still warming up we omit the place
+	// rather than stall the request (and the panel's "loading…") on the
+	// expensive one-time dataset parse.
 	if resp.Place == "" && info.HasGPS {
-		resp.Place = PlaceName(info.Lat, info.Lon)
+		if place, ok := PlaceNameIfReady(info.Lat, info.Lon); ok {
+			resp.Place = place
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// joinPlace formats a "City, Country" label, dropping whichever part is empty.
-func joinPlace(city, country string) string {
-	parts := make([]string, 0, 2)
-	if city != "" {
-		parts = append(parts, city)
-	}
-	if country != "" {
-		parts = append(parts, country)
-	}
-	return strings.Join(parts, ", ")
 }
 
 type nodeMetadataInput struct {

@@ -124,14 +124,16 @@
   <div class="viewer-overlay" id="viewer-overlay" hidden></div>
   <div class="viewer-toolbar">
     <span class="viewer-caption" id="viewer-caption"></span>
-    <button class="btn" id="viewer-slideshow">
-      <svg class="icon" viewBox="0 0 24 24"><use href="#i-play"/></svg> <span data-i18n="viewer.slideshow">Slideshow</span>
-    </button>
+    <div class="btn-split" role="group" data-i18n-title="viewer.slideshow" title="Slideshow">
+      <button class="btn btn-split-main" id="viewer-slideshow">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-play"/></svg> <span data-i18n="viewer.slideshow">Slideshow</span>
+      </button>
+      <button class="btn btn-split-side" id="viewer-settings-btn" data-i18n-title="viewer.slideshowSettings" title="Slideshow settings">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
+      </button>
+    </div>
     <button class="btn" id="viewer-info-btn" data-i18n-title="viewer.info" title="Information">
       <svg class="icon" viewBox="0 0 24 24"><use href="#i-info"/></svg>
-    </button>
-    <button class="btn" id="viewer-settings-btn" data-i18n-title="viewer.slideshowSettings" title="Slideshow settings">
-      <svg class="icon" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
     </button>
     <div class="viewer-menu-wrap" id="viewer-menu-wrap" hidden>
       <button class="btn" id="viewer-menu-btn" data-i18n-title="viewer.more" title="More" aria-haspopup="true" aria-expanded="false">
