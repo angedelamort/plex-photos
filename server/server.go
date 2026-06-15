@@ -138,6 +138,8 @@ func NewMux(d Deps) *http.ServeMux {
 	// --- Admin jobs ---
 	mux.Handle("GET /api/admin/jobs", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListJobs)))
 	mux.Handle("POST /api/admin/jobs/{id}/cancel", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminCancelJob)))
+	mux.Handle("POST /api/admin/jobs/{id}/pause", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminPauseJob)))
+	mux.Handle("POST /api/admin/jobs/{id}/resume", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminResumeJob)))
 	// Diagnostic: full goroutine stack dump for debugging a stuck scan.
 	mux.Handle("GET /api/admin/debug/goroutines", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminDebugGoroutines)))
 

@@ -759,6 +759,9 @@ type Job struct {
 	// Current is the item (e.g. photo path) being processed right now. It is a
 	// live, in-memory overlay for the running job only and is never persisted.
 	Current string `json:"current,omitempty"`
+	// Paused reports whether an admin has held the running job. Like Current, it
+	// is a live overlay for the active job only and is never persisted.
+	Paused bool `json:"paused,omitempty"`
 }
 
 // CreateJob inserts a new running job row and returns its ID.

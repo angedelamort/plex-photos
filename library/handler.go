@@ -370,6 +370,38 @@ func (h *Handler) AdminCancelJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"canceled": true, "id": id})
 }
 
+// AdminPauseJob holds the running job at its next cooperative checkpoint
+// without ending it, so an admin can momentarily relieve CPU/disk pressure (or
+// inspect partial results) and later resume from the exact same point. Only the
+// active job can be paused; a queued job has no work in flight to hold.
+func (h *Handler) AdminPauseJob(w http.ResponseWriter, r *http.Request) {
+	if h.jobs == nil {
+		writeErr(w, http.StatusServiceUnavailable, "jobs unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if !h.jobs.Pause(id) {
+		writeErr(w, http.StatusNotFound, "job not running or already paused")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"paused": true, "id": id})
+}
+
+// AdminResumeJob lifts a pause set by AdminPauseJob so the running job continues
+// from where it stopped.
+func (h *Handler) AdminResumeJob(w http.ResponseWriter, r *http.Request) {
+	if h.jobs == nil {
+		writeErr(w, http.StatusServiceUnavailable, "jobs unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if !h.jobs.Resume(id) {
+		writeErr(w, http.StatusNotFound, "job not running or not paused")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resumed": true, "id": id})
+}
+
 // AdminDebugGoroutines dumps every goroutine's stack as plain text, so when a
 // scan appears stuck an admin can see exactly which call the worker is parked on
 // (a blocked syscall on a NAS read, a lock, a decode loop, etc.). It is a

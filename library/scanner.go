@@ -436,6 +436,12 @@ func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *
 				if jp.Canceled() {
 					continue
 				}
+				// Park here while the admin has paused the job. WaitIfPaused
+				// also returns if the job is canceled mid-pause, so re-check.
+				jp.WaitIfPaused()
+				if jp.Canceled() {
+					continue
+				}
 				sc.runOnePhotoItem(lib, phase, rel, jp, metrics, work)
 				sc.updateProgress(lib.ID, bump)
 				if jp != nil {
@@ -729,6 +735,10 @@ func (sc *Scanner) cleanupOrphanThumbs(lib *Library, rels []string, cacheIdx Cac
 	}
 
 	for i, dst := range orphans {
+		jp.WaitIfPaused()
+		if jp.Canceled() {
+			break
+		}
 		if err := sc.thumbs.RemoveThumb(dst); err != nil {
 			log.Printf("cleanup orphan thumb %q: %v", dst, err)
 		}

@@ -53,6 +53,14 @@ type activeJob struct {
 	// cancel stops the running job; it cancels the context handed to the job's
 	// run function so cooperative work (e.g. a scan's per-photo loop) can bail.
 	cancel context.CancelFunc
+	// paused reports whether an admin has requested the job hold. While paused,
+	// cooperative work parks in WaitIfPaused instead of doing work, but the job
+	// keeps its slot and progress so Resume continues exactly where it stopped.
+	paused bool
+	// resume is closed by Resume to wake workers parked in WaitIfPaused. It is
+	// (re)created on each Pause and nil while running, so a closed channel is
+	// never reused.
+	resume chan struct{}
 }
 
 // JobProgress is handed to a job's run function so it can report progress and
@@ -71,6 +79,38 @@ func (p *JobProgress) Canceled() bool {
 		return false
 	}
 	return p.ctx.Err() != nil
+}
+
+// WaitIfPaused blocks while the admin has paused this job, returning once the
+// job is resumed or canceled. Long-running work should call it at the same
+// cooperative checkpoints it polls Canceled() (e.g. between items), so a pause
+// takes effect promptly without losing progress. It selects on the job's
+// context so a cancel issued while paused still unblocks the worker; callers
+// should re-check Canceled() afterwards. A JobProgress with no context is never
+// paused.
+func (p *JobProgress) WaitIfPaused() {
+	if p == nil || p.ctx == nil {
+		return
+	}
+	m := p.mgr
+	for {
+		m.mu.Lock()
+		if m.active == nil || m.active.id != p.id || !m.active.paused {
+			m.mu.Unlock()
+			return
+		}
+		ch := m.active.resume
+		m.mu.Unlock()
+		if ch == nil {
+			return
+		}
+		select {
+		case <-ch:
+			// Resumed (or paused→resumed→paused); loop to re-evaluate state.
+		case <-p.ctx.Done():
+			return // canceled while paused; let Canceled() drive the bail-out
+		}
+	}
 }
 
 // NewJobManager builds a job manager backed by the given store.
@@ -137,6 +177,38 @@ func (m *JobManager) Cancel(id string) bool {
 		}
 	}
 	m.mu.Unlock()
+	return false
+}
+
+// Pause requests that the running job hold at its next cooperative checkpoint.
+// The job keeps its worker slot and in-memory progress, so Resume continues
+// exactly where it stopped (unlike Cancel, which ends the run). Returns true if
+// the job is the active one and was not already paused. Only the running job
+// can be paused; queued jobs have no work in flight to hold.
+func (m *JobManager) Pause(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active != nil && m.active.id == id && !m.active.paused {
+		m.active.paused = true
+		m.active.resume = make(chan struct{})
+		return true
+	}
+	return false
+}
+
+// Resume lifts a pause set by Pause, waking any workers parked in
+// WaitIfPaused. Returns true if the active job was paused and is now running.
+func (m *JobManager) Resume(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active != nil && m.active.id == id && m.active.paused {
+		m.active.paused = false
+		if m.active.resume != nil {
+			close(m.active.resume)
+			m.active.resume = nil
+		}
+		return true
+	}
 	return false
 }
 
@@ -265,6 +337,7 @@ func (m *JobManager) List() ([]*Job, error) {
 				j.Done = active.done
 				j.Total = active.total
 				j.Current = active.current
+				j.Paused = active.paused
 			}
 		}
 	}

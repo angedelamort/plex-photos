@@ -2891,7 +2891,9 @@ function buildJobRow(j) {
 
   let statusPill;
   if (j.status === "running") {
-    statusPill = `<span class="pill">${esc(t("jobs.running"))}</span>`;
+    statusPill = j.paused
+      ? `<span class="pill">${esc(t("jobs.paused"))}</span>`
+      : `<span class="pill">${esc(t("jobs.running"))}</span>`;
   } else if (j.status === "success") {
     statusPill = `<span class="pill pill-ok">${esc(t("jobs.success"))}</span>`;
   } else {
@@ -2927,9 +2929,22 @@ function buildJobRow(j) {
     el("span", { class: "section-sub", text: when }),
   ]);
   if (j.status === "running") {
+    if (j.paused) {
+      rightActions.appendChild(el("button", {
+        class: "btn sm accent",
+        html: `${icon("play")} ${esc(t("jobs.resume"))}`,
+        onclick: (ev) => pauseResumeJob(j.id, "resume", ev.currentTarget),
+      }));
+    } else {
+      rightActions.appendChild(el("button", {
+        class: "btn sm",
+        html: `${icon("pause")} ${esc(t("jobs.pause"))}`,
+        onclick: (ev) => pauseResumeJob(j.id, "pause", ev.currentTarget),
+      }));
+    }
     rightActions.appendChild(el("button", {
       class: "btn sm danger",
-      html: `${icon("stop")} ${esc(t("jobs.stop"))}`,
+      html: `${icon("stop")} ${esc(t("jobs.cancel"))}`,
       onclick: (ev) => cancelJob(j.id, ev.currentTarget),
     }));
   }
@@ -2938,8 +2953,8 @@ function buildJobRow(j) {
 }
 
 async function cancelJob(id, btn) {
-  if (!confirm(t("jobs.stopConfirm"))) return;
-  if (btn) { btn.disabled = true; btn.textContent = t("jobs.stopping"); }
+  if (!confirm(t("jobs.cancelConfirm"))) return;
+  if (btn) { btn.disabled = true; btn.textContent = t("jobs.canceling"); }
   try {
     await api(`/api/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   } catch (e) {
@@ -2948,6 +2963,21 @@ async function cancelJob(id, btn) {
     return;
   }
   // Refresh promptly so the row flips to "failed · interrupted by user".
+  const list = document.getElementById("jobs-list");
+  if (list) await refreshJobs(list);
+}
+
+// pauseResumeJob holds (pause) or continues (resume) the running job without
+// ending it, then refreshes so the row flips between its Pause/Resume states.
+async function pauseResumeJob(id, action, btn) {
+  if (btn) { btn.disabled = true; }
+  try {
+    await api(`/api/admin/jobs/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+    if (btn) { btn.disabled = false; }
+    return;
+  }
   const list = document.getElementById("jobs-list");
   if (list) await refreshJobs(list);
 }
