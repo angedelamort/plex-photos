@@ -372,7 +372,7 @@ func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *
 		go func() {
 			defer wg.Done()
 			for rel := range jobs {
-				sc.runOnePhotoItem(lib, phase, rel, work)
+				sc.runOnePhotoItem(lib, phase, rel, jp, work)
 				sc.updateProgress(lib.ID, bump)
 				if jp != nil {
 					doneMu.Lock()
@@ -391,8 +391,11 @@ func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *
 	wg.Wait()
 
 	// The current-file marker is per-phase; clear it so a finished phase doesn't
-	// leave a stale filename in the progress banner.
+	// leave a stale filename in the progress banner or Jobs view.
 	sc.updateProgress(lib.ID, func(p *ScanProgress) { p.CurrentDir = "" })
+	if jp != nil {
+		jp.SetCurrent("")
+	}
 }
 
 // slowPhotoWarn is how long a single photo may take before we log a warning
@@ -411,8 +414,11 @@ const photoHardTimeout = 2 * time.Minute
 // crash the scan), and watches the wall-clock so a single file that blocks
 // forever (stalled storage, decoder loop) is warned about and ultimately
 // skipped instead of freezing the phase.
-func (sc *Scanner) runOnePhotoItem(lib *Library, phase, rel string, work func(rel string) error) {
+func (sc *Scanner) runOnePhotoItem(lib *Library, phase, rel string, jp *JobProgress, work func(rel string) error) {
 	sc.updateProgress(lib.ID, func(p *ScanProgress) { p.CurrentDir = rel })
+	if jp != nil {
+		jp.SetCurrent(rel)
+	}
 
 	start := time.Now()
 	done := make(chan struct{})

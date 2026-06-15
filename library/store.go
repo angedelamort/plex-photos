@@ -755,6 +755,9 @@ type Job struct {
 	Message    string     `json:"message"`
 	StartedAt  time.Time  `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt"`
+	// Current is the item (e.g. photo path) being processed right now. It is a
+	// live, in-memory overlay for the running job only and is never persisted.
+	Current string `json:"current,omitempty"`
 }
 
 // CreateJob inserts a new running job row and returns its ID.

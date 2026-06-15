@@ -2685,6 +2685,9 @@ function buildJobRow(j) {
     bar.appendChild(el("div", { class: "job-progress-bar", style: `width:${pct}%` }));
     left.appendChild(el("div", { class: "lib-path", text: detail }));
     left.appendChild(bar);
+    if (j.current) {
+      left.appendChild(el("div", { class: "lib-path", text: `${t("jobs.current")}: ${j.current}` }));
+    }
   } else if (j.status === "failed" && j.message) {
     left.appendChild(el("div", { class: "lib-path err-msg", text: j.message }));
   }

@@ -41,6 +41,7 @@ type activeJob struct {
 	phase   string
 	done    int
 	total   int
+	current string // file/item currently being processed, for live debugging
 }
 
 // JobProgress is handed to a job's run function so it can report progress.
@@ -133,8 +134,25 @@ func (p *JobProgress) set(phase string, done, total int) {
 	}
 }
 
-// SetPhase records the current phase and resets the counters for it.
-func (p *JobProgress) SetPhase(phase string, total int) { p.set(phase, 0, total) }
+// SetPhase records the current phase and resets the counters for it. The
+// current-item marker is cleared so a new phase doesn't show a stale file.
+func (p *JobProgress) SetPhase(phase string, total int) {
+	p.SetCurrent("")
+	p.set(phase, 0, total)
+}
+
+// SetCurrent records the item (e.g. photo path) currently being processed so
+// the Jobs UI can show what a long phase is working on right now. It is a cheap
+// in-memory update only (no DB flush): the value is surfaced via List()'s live
+// overlay and is naturally ephemeral.
+func (p *JobProgress) SetCurrent(item string) {
+	m := p.mgr
+	m.mu.Lock()
+	if m.active != nil && m.active.id == p.id {
+		m.active.current = item
+	}
+	m.mu.Unlock()
+}
 
 // SetProgress records absolute progress within the current phase.
 func (p *JobProgress) SetProgress(done, total int) {
@@ -184,6 +202,7 @@ func (m *JobManager) List() ([]*Job, error) {
 				j.Phase = active.phase
 				j.Done = active.done
 				j.Total = active.total
+				j.Current = active.current
 			}
 		}
 	}
