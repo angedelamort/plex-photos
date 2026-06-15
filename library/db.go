@@ -230,6 +230,20 @@ CREATE TABLE IF NOT EXISTS jobs (
   finished_at  DATETIME
 );
 
+-- Persistent timing reports for scan runs. One row per finished scan (success,
+-- failure, or cancel) holding a JSON measurements breakdown rendered by the
+-- admin UI. Capped to the most recent N rows (a setting) by the store on insert.
+CREATE TABLE IF NOT EXISTS scan_reports (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id       TEXT,
+  library_id   TEXT,
+  library_name TEXT,
+  status       TEXT NOT NULL,
+  started_at   DATETIME,
+  finished_at  DATETIME,
+  report       TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_started ON jobs(started_at);
 CREATE INDEX IF NOT EXISTS idx_nodes_library ON nodes(library_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);

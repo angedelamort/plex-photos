@@ -59,10 +59,16 @@ type PhotoMeta struct {
 // tags, and date/GPS fallbacks). When coordinates are available it reverse
 // geocodes them to city/country. It never errors: missing data simply leaves
 // the corresponding fields zero/empty.
-func extractPhotoMeta(abs string) PhotoMeta {
+func extractPhotoMeta(abs string, metrics *scanMetrics) PhotoMeta {
 	var m PhotoMeta
 
-	if ex, err := ReadExif(abs); err == nil && ex != nil {
+	var ex *ExifInfo
+	var exErr error
+	_ = metrics.timeIt("meta.exif", func() error {
+		ex, exErr = ReadExif(abs)
+		return exErr
+	})
+	if exErr == nil && ex != nil {
 		m.Width = ex.Width
 		m.Height = ex.Height
 		m.Camera = ex.Camera
@@ -83,7 +89,13 @@ func extractPhotoMeta(abs string) PhotoMeta {
 
 	// Layer the sidecar: people always come from here, and it supplies date /
 	// GPS when EXIF lacked them (common for scans, screenshots, edited files).
-	if g, ok := parseSidecar(abs); ok {
+	var g *GoogleMeta
+	var ok bool
+	_ = metrics.timeIt("meta.sidecar", func() error {
+		g, ok = parseSidecar(abs)
+		return nil
+	})
+	if ok {
 		m.HasSidecar = true
 		m.People = g.People
 		if m.TakenAt.IsZero() && !g.TakenAt.IsZero() {
@@ -99,7 +111,10 @@ func extractPhotoMeta(abs string) PhotoMeta {
 	}
 	m.Orientation = orientationOf(m.Width, m.Height)
 	if m.HasGPS {
-		m.PlaceCity, m.PlaceProvince, m.PlaceCountry = PlaceParts(m.Lat, m.Lon)
+		_ = metrics.timeIt("meta.geocode", func() error {
+			m.PlaceCity, m.PlaceProvince, m.PlaceCountry = PlaceParts(m.Lat, m.Lon)
+			return nil
+		})
 	}
 	m.MetaVersion = photoMetaVersion
 

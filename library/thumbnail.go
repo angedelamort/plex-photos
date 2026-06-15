@@ -3,6 +3,7 @@ package library
 import (
 	"fmt"
 	"hash/fnv"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,7 +168,7 @@ func (t *Thumbnailer) ThumbPath(token string) (string, error) {
 		return dstFull, nil
 	}
 
-	if err := t.generate(srcFull, dstFull); err != nil {
+	if err := t.generate(srcFull, dstFull, nil); err != nil {
 		return "", err
 	}
 	return dstFull, nil
@@ -230,7 +231,7 @@ func (t *Thumbnailer) BuildCacheIndex(needModTimes bool) (CacheIndex, error) {
 // per-photo stat of the thumbnail file. It still stats the source (needed to
 // detect a source newer than its thumbnail) but skips the second syscall and
 // the per-path lock map growth for thumbnails that are already fresh.
-func (t *Thumbnailer) EnsureIndexed(token string, idx CacheIndex) (bool, error) {
+func (t *Thumbnailer) EnsureIndexed(token string, idx CacheIndex, m *scanMetrics) (bool, error) {
 	srcFull := URLPathToAbs(token)
 	if !IsImage(srcFull) {
 		return false, fmt.Errorf("not an image: %s", token)
@@ -249,7 +250,7 @@ func (t *Thumbnailer) EnsureIndexed(token string, idx CacheIndex) (bool, error) 
 	if thumbFresh(dstFull, srcInfo) {
 		return false, nil
 	}
-	if err := t.generate(srcFull, dstFull); err != nil {
+	if err := t.generate(srcFull, dstFull, m); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -263,7 +264,7 @@ func (t *Thumbnailer) EnsureIndexed(token string, idx CacheIndex) (bool, error) 
 // the per-file stat syscall, so skipping it makes a warm re-scan effectively
 // free for already-thumbnailed photos. New photos are generated, which reads
 // the source anyway, making the elided stat negligible there.
-func (t *Thumbnailer) EnsurePresent(token string, idx CacheIndex) (bool, error) {
+func (t *Thumbnailer) EnsurePresent(token string, idx CacheIndex, m *scanMetrics) (bool, error) {
 	srcFull := URLPathToAbs(token)
 	if !IsImage(srcFull) {
 		return false, fmt.Errorf("not an image: %s", token)
@@ -287,7 +288,7 @@ func (t *Thumbnailer) EnsurePresent(token string, idx CacheIndex) (bool, error) 
 	if fi, err := os.Stat(dstFull); err == nil && fi.Size() > 0 {
 		return false, nil
 	}
-	if err := t.generate(srcFull, dstFull); err != nil {
+	if err := t.generate(srcFull, dstFull, m); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -315,7 +316,7 @@ func (t *Thumbnailer) Ensure(token string) (bool, error) {
 	if thumbFresh(dstFull, srcInfo) {
 		return false, nil
 	}
-	if err := t.generate(srcFull, dstFull); err != nil {
+	if err := t.generate(srcFull, dstFull, nil); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -332,18 +333,32 @@ func thumbFresh(dst string, srcInfo os.FileInfo) bool {
 	return !fi.ModTime().Before(srcInfo.ModTime())
 }
 
-func (t *Thumbnailer) generate(src, dst string) error {
-	img, err := imaging.Open(src, imaging.AutoOrientation(true))
-	if err != nil {
+// generate decodes the source image, downscales it, and writes the cached
+// thumbnail atomically. When m is non-nil (scan path) the decode, resize, and
+// encode steps are timed separately so the scan report can attribute the cost;
+// m is nil on the lazy on-demand path and adds no overhead there.
+func (t *Thumbnailer) generate(src, dst string, m *scanMetrics) error {
+	var img image.Image
+	if err := m.timeIt("thumb.decode", func() (err error) {
+		img, err = imaging.Open(src, imaging.AutoOrientation(true))
+		return err
+	}); err != nil {
 		return fmt.Errorf("open image: %w", err)
 	}
-	thumb := imaging.Resize(img, t.width, 0, t.resampleFilter())
+
+	var thumb *image.NRGBA
+	_ = m.timeIt("thumb.resize", func() error {
+		thumb = imaging.Resize(img, t.width, 0, t.resampleFilter())
+		return nil
+	})
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("create thumb dir: %w", err)
 	}
 	tmp := dst + ".tmp.jpg"
-	if err := imaging.Save(thumb, tmp, imaging.JPEGQuality(82)); err != nil {
+	if err := m.timeIt("thumb.encode", func() error {
+		return imaging.Save(thumb, tmp, imaging.JPEGQuality(82))
+	}); err != nil {
 		return fmt.Errorf("save thumb: %w", err)
 	}
 	if err := os.Rename(tmp, dst); err != nil {

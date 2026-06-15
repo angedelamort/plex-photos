@@ -1,11 +1,19 @@
 package library
 
 import (
+	"context"
+	"errors"
 	"log"
 	"sync"
 
 	"github.com/google/uuid"
 )
+
+// ErrJobCanceled is returned by a job's run function when the job was stopped by
+// an admin from the Jobs page. The job manager records it as the failure
+// message, so a canceled run shows "interrupted by user" rather than a generic
+// error.
+var ErrJobCanceled = errors.New("interrupted by user")
 
 // JobManager runs background jobs (library scans, thumbnail regeneration) one
 // at a time and records each run to the store so the admin Jobs page can show
@@ -42,12 +50,27 @@ type activeJob struct {
 	done    int
 	total   int
 	current string // file/item currently being processed, for live debugging
+	// cancel stops the running job; it cancels the context handed to the job's
+	// run function so cooperative work (e.g. a scan's per-photo loop) can bail.
+	cancel context.CancelFunc
 }
 
-// JobProgress is handed to a job's run function so it can report progress.
+// JobProgress is handed to a job's run function so it can report progress and
+// observe cancellation (via Canceled / the embedded context).
 type JobProgress struct {
 	mgr *JobManager
 	id  string
+	ctx context.Context
+}
+
+// Canceled reports whether the admin requested this job be stopped. Long-running
+// work should poll this periodically and return ErrJobCanceled to abort
+// promptly. A JobProgress with no context (jp == nil paths) is never canceled.
+func (p *JobProgress) Canceled() bool {
+	if p == nil || p.ctx == nil {
+		return false
+	}
+	return p.ctx.Err() != nil
 }
 
 // NewJobManager builds a job manager backed by the given store.
@@ -85,6 +108,38 @@ func (m *JobManager) Enqueue(jobType, target string, run func(p *JobProgress) er
 	return id
 }
 
+// Cancel stops a job by ID. If the job is currently running, its context is
+// canceled so the run function can bail out cooperatively (the loop then records
+// it as failed with ErrJobCanceled). If the job is still queued, it is removed
+// from the queue and marked failed immediately. Returns true if a matching
+// pending/running job was found.
+func (m *JobManager) Cancel(id string) bool {
+	m.mu.Lock()
+	if m.active != nil && m.active.id == id {
+		cancel := m.active.cancel
+		m.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return true
+	}
+	// Not the active job: look for it in the queue and drop it.
+	for i, task := range m.queue {
+		if task.id == id {
+			m.queue = append(m.queue[:i], m.queue[i+1:]...)
+			m.mu.Unlock()
+			if m.store != nil {
+				if err := m.store.FinishJob(id, JobFailed, ErrJobCanceled.Error()); err != nil {
+					log.Printf("jobs: cancel queued %s: %v", id, err)
+				}
+			}
+			return true
+		}
+	}
+	m.mu.Unlock()
+	return false
+}
+
 func (m *JobManager) loop() {
 	for {
 		m.mu.Lock()
@@ -96,11 +151,18 @@ func (m *JobManager) loop() {
 		}
 		task := m.queue[0]
 		m.queue = m.queue[1:]
-		m.active = &activeJob{id: task.id, jobType: task.jobType, target: task.target}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.active = &activeJob{id: task.id, jobType: task.jobType, target: task.target, cancel: cancel}
 		m.mu.Unlock()
 
-		p := &JobProgress{mgr: m, id: task.id}
+		p := &JobProgress{mgr: m, id: task.id, ctx: ctx}
 		err := task.run(p)
+		cancel()
+		// A canceled context means the stop was admin-initiated; normalize the
+		// failure message even if the run function returned its own error.
+		if ctx.Err() != nil {
+			err = ErrJobCanceled
+		}
 
 		status, msg := JobSuccess, ""
 		if err != nil {

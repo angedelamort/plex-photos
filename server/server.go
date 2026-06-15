@@ -137,12 +137,18 @@ func NewMux(d Deps) *http.ServeMux {
 
 	// --- Admin jobs ---
 	mux.Handle("GET /api/admin/jobs", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListJobs)))
+	mux.Handle("POST /api/admin/jobs/{id}/cancel", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminCancelJob)))
 	// Diagnostic: full goroutine stack dump for debugging a stuck scan.
 	mux.Handle("GET /api/admin/debug/goroutines", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminDebugGoroutines)))
 
 	// --- Admin scan error log ---
 	mux.Handle("GET /api/admin/errors", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListScanErrors)))
 	mux.Handle("DELETE /api/admin/errors", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminClearScanErrors)))
+
+	// --- Admin scan timing reports ---
+	mux.Handle("GET /api/admin/reports", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListScanReports)))
+	mux.Handle("GET /api/admin/reports/{id}", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminGetScanReport)))
+	mux.Handle("DELETE /api/admin/reports", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminClearScanReports)))
 
 	// --- Admin users / library access ---
 	mux.Handle("GET /api/admin/users", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListUsers)))

@@ -2,6 +2,7 @@ package library
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -815,6 +816,137 @@ func (s *Store) ListJobs() ([]*Job, error) {
 		out = append(out, &j)
 	}
 	return out, rows.Err()
+}
+
+// --- Scan timing reports ---
+
+// SettingScanReportLimit is the settings key holding how many scan timing
+// reports are retained. Older reports beyond this count are pruned on insert.
+const SettingScanReportLimit = "scan_report_limit"
+
+// defaultScanReportLimit / maxScanReportLimit bound the retained-report count.
+const (
+	defaultScanReportLimit = 10
+	maxScanReportLimit     = 50
+)
+
+// ScanReportMeta is the lightweight header of a stored scan report (everything
+// except the potentially large JSON body), used for the reports list.
+type ScanReportMeta struct {
+	ID          int64      `json:"id"`
+	JobID       string     `json:"jobId"`
+	LibraryID   string     `json:"libraryId"`
+	LibraryName string     `json:"libraryName"`
+	Status      string     `json:"status"`
+	StartedAt   *time.Time `json:"startedAt"`
+	FinishedAt  *time.Time `json:"finishedAt"`
+}
+
+// ScanReportRecord is a stored report's header plus its JSON measurements body.
+// Report is kept raw so it is embedded as an object in the API response rather
+// than a re-encoded string.
+type ScanReportRecord struct {
+	ScanReportMeta
+	Report json.RawMessage `json:"report"`
+}
+
+// scanReportLimit resolves the configured retention count, clamped to a sane
+// range. Falls back to the default when unset or unparseable.
+func (s *Store) scanReportLimit() int {
+	n := defaultScanReportLimit
+	if v, err := s.GetSetting(SettingScanReportLimit, ""); err == nil {
+		if parsed, perr := strconv.Atoi(strings.TrimSpace(v)); perr == nil {
+			n = parsed
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > maxScanReportLimit {
+		n = maxScanReportLimit
+	}
+	return n
+}
+
+// RecordScanReport stores one scan's JSON timing report and prunes older reports
+// beyond the configured limit. reportJSON is the marshaled ScanReport.
+func (s *Store) RecordScanReport(jobID, libraryID, libraryName, status string, startedAt, finishedAt time.Time, reportJSON string) error {
+	if _, err := s.db.Exec(
+		`INSERT INTO scan_reports (job_id, library_id, library_name, status, started_at, finished_at, report)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		nullIfEmpty(jobID), nullIfEmpty(libraryID), libraryName, status,
+		startedAt, finishedAt, reportJSON); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(
+		`DELETE FROM scan_reports WHERE id NOT IN (
+			SELECT id FROM scan_reports ORDER BY id DESC LIMIT ?
+		)`, s.scanReportLimit())
+	return err
+}
+
+// ListScanReports returns the stored report headers (no JSON body), newest
+// first, so the admin UI can list runs cheaply.
+func (s *Store) ListScanReports() ([]*ScanReportMeta, error) {
+	rows, err := s.db.Query(
+		`SELECT id, COALESCE(job_id, ''), COALESCE(library_id, ''), library_name,
+		        status, started_at, finished_at
+		 FROM scan_reports ORDER BY id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*ScanReportMeta{}
+	for rows.Next() {
+		var m ScanReportMeta
+		var started, finished sql.NullTime
+		if err := rows.Scan(&m.ID, &m.JobID, &m.LibraryID, &m.LibraryName,
+			&m.Status, &started, &finished); err != nil {
+			return nil, err
+		}
+		if started.Valid {
+			m.StartedAt = &started.Time
+		}
+		if finished.Valid {
+			m.FinishedAt = &finished.Time
+		}
+		out = append(out, &m)
+	}
+	return out, rows.Err()
+}
+
+// GetScanReport returns a single stored report (header + JSON body) by ID, or
+// ErrNotFound when it does not exist.
+func (s *Store) GetScanReport(id int64) (*ScanReportRecord, error) {
+	var rec ScanReportRecord
+	var started, finished sql.NullTime
+	var body string
+	err := s.db.QueryRow(
+		`SELECT id, COALESCE(job_id, ''), COALESCE(library_id, ''), library_name,
+		        status, started_at, finished_at, report
+		 FROM scan_reports WHERE id = ?`, id).
+		Scan(&rec.ID, &rec.JobID, &rec.LibraryID, &rec.LibraryName,
+			&rec.Status, &started, &finished, &body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if started.Valid {
+		rec.StartedAt = &started.Time
+	}
+	if finished.Valid {
+		rec.FinishedAt = &finished.Time
+	}
+	rec.Report = json.RawMessage(body)
+	return &rec, nil
+}
+
+// ClearScanReports removes all stored scan reports.
+func (s *Store) ClearScanReports() error {
+	_, err := s.db.Exec(`DELETE FROM scan_reports`)
+	return err
 }
 
 // MarkStaleJobsFailed flips any jobs left in the "running" state (e.g. due to a

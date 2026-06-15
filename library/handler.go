@@ -354,6 +354,22 @@ func (h *Handler) AdminListJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, jobs)
 }
 
+// AdminCancelJob stops a running or queued background job so an admin can, for
+// example, halt a long scan, adjust the worker-thread count, and start a fresh
+// one. The job ends as failed with an "interrupted by user" message.
+func (h *Handler) AdminCancelJob(w http.ResponseWriter, r *http.Request) {
+	if h.jobs == nil {
+		writeErr(w, http.StatusServiceUnavailable, "jobs unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if !h.jobs.Cancel(id) {
+		writeErr(w, http.StatusNotFound, "job not running")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"canceled": true, "id": id})
+}
+
 // AdminDebugGoroutines dumps every goroutine's stack as plain text, so when a
 // scan appears stuck an admin can see exactly which call the worker is parked on
 // (a blocked syscall on a NAS read, a lock, a decode loop, etc.). It is a
@@ -425,9 +441,17 @@ func (h *Handler) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"autoScanIntervalHours": hours,
-		"thumbnailWorkers":      thumbWorkers,
-		"thumbnailFilter":       thumbFilter,
-		"rowLimit":              h.rowLimit(),
+		// workerThreads is the general scan concurrency (thumbnails + metadata);
+		// thumbnailWorkers is kept as a backward-compatible alias of the same
+		// value so older clients keep working.
+		"workerThreads":    thumbWorkers,
+		"thumbnailWorkers": thumbWorkers,
+		"maxWorkerThreads": maxThumbWorkers,
+		"thumbnailFilter":  thumbFilter,
+		"rowLimit":         h.rowLimit(),
+		// scanReportLimit is how many scan timing reports are retained.
+		"scanReportLimit":    h.store.scanReportLimit(),
+		"maxScanReportLimit": maxScanReportLimit,
 	})
 }
 
@@ -437,9 +461,11 @@ func (h *Handler) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		AutoScanIntervalHours *int    `json:"autoScanIntervalHours"`
+		WorkerThreads         *int    `json:"workerThreads"`
 		ThumbnailWorkers      *int    `json:"thumbnailWorkers"`
 		ThumbnailFilter       *string `json:"thumbnailFilter"`
 		RowLimit              *int    `json:"rowLimit"`
+		ScanReportLimit       *int    `json:"scanReportLimit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
@@ -451,8 +477,15 @@ func (h *Handler) AdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.ThumbnailWorkers != nil && h.scanner != nil {
-		h.scanner.SetThumbWorkers(*in.ThumbnailWorkers)
+	// workerThreads is the canonical key; thumbnailWorkers is accepted as an
+	// alias for backward compatibility. Either updates the shared scan
+	// concurrency used by both the thumbnail and metadata phases.
+	workers := in.WorkerThreads
+	if workers == nil {
+		workers = in.ThumbnailWorkers
+	}
+	if workers != nil && h.scanner != nil {
+		h.scanner.SetThumbWorkers(*workers)
 		if err := h.store.SetSetting(SettingThumbWorkers, strconv.Itoa(h.scanner.ThumbWorkers())); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -471,6 +504,19 @@ func (h *Handler) AdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			n = defaultRowLimit
 		}
 		if err := h.store.SetSetting(SettingRowLimit, strconv.Itoa(n)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if in.ScanReportLimit != nil {
+		n := *in.ScanReportLimit
+		if n < 1 {
+			n = defaultScanReportLimit
+		}
+		if n > maxScanReportLimit {
+			n = maxScanReportLimit
+		}
+		if err := h.store.SetSetting(SettingScanReportLimit, strconv.Itoa(n)); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -494,6 +540,48 @@ func (h *Handler) AdminListScanErrors(w http.ResponseWriter, r *http.Request) {
 // AdminClearScanErrors removes all recorded scan errors.
 func (h *Handler) AdminClearScanErrors(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.ClearScanErrors(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Admin: scan timing reports ---
+
+// AdminListScanReports returns the stored scan timing report headers (no body),
+// most recent first.
+func (h *Handler) AdminListScanReports(w http.ResponseWriter, r *http.Request) {
+	reports, err := h.store.ListScanReports()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, reports)
+}
+
+// AdminGetScanReport returns a single stored scan report (header + measurements
+// body) by numeric ID.
+func (h *Handler) AdminGetScanReport(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid report id")
+		return
+	}
+	rec, err := h.store.GetScanReport(id)
+	if errors.Is(err, ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "report not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// AdminClearScanReports removes all stored scan timing reports.
+func (h *Handler) AdminClearScanReports(w http.ResponseWriter, r *http.Request) {
+	if err := h.store.ClearScanReports(); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

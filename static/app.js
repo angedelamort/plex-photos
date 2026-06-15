@@ -2365,47 +2365,64 @@ async function buildAutoScanPanel() {
   return panel;
 }
 
-// ── admin: thumbnail CPU settings ──
-async function buildThumbWorkersPanel() {
+// ── admin: settings save helper ──
+async function saveAdminSetting(body) {
+  try {
+    await api("/api/admin/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+// ── admin: scan CPU threads ──
+async function buildScanThreadsPanel() {
   let workers = 1;
-  let filter = "lanczos";
   try {
     const s = await api("/api/admin/settings");
-    if (s.thumbnailWorkers) workers = s.thumbnailWorkers;
-    if (s.thumbnailFilter) filter = s.thumbnailFilter;
+    if (s.workerThreads) workers = s.workerThreads;
+    else if (s.thumbnailWorkers) workers = s.thumbnailWorkers;
   } catch (e) { /* fall back to defaults */ }
-
-  async function save(body) {
-    try {
-      await api("/api/admin/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    } catch (e) {
-      alert(t("alert.error", { msg: e.message }));
-    }
-  }
 
   const panel = el("div", { class: "lib-row" });
   panel.appendChild(el("div", {
-    html: `<div class="lib-name">${esc(t("admin.thumbWorkers"))}</div><div class="lib-path">${esc(t("admin.thumbWorkersHint"))}</div>`,
+    html: `<div class="lib-name">${esc(t("admin.workerThreads"))}</div><div class="lib-path">${esc(t("admin.workerThreadsHint"))}</div>`,
   }));
 
   const actions = el("div", { class: "lib-actions" });
-
   const workerSelect = el("select", { class: "control sm" });
   [1, 2, 3, 4, 6, 8].forEach((val) => {
-    const opt = el("option", { text: t("admin.thumbWorkersOption", { n: val }) });
+    const opt = el("option", { text: t("admin.workerThreadsOption", { n: val }) });
     opt.value = String(val);
     if (val === workers) opt.selected = true;
     workerSelect.appendChild(opt);
   });
   workerSelect.addEventListener("change", (ev) => {
-    save({ thumbnailWorkers: parseInt(ev.target.value, 10) || 1 });
+    saveAdminSetting({ workerThreads: parseInt(ev.target.value, 10) || 1 });
   });
   actions.appendChild(workerSelect);
 
+  panel.appendChild(actions);
+  return panel;
+}
+
+// ── admin: thumbnail resizing algorithm ──
+async function buildThumbFilterPanel() {
+  let filter = "lanczos";
+  try {
+    const s = await api("/api/admin/settings");
+    if (s.thumbnailFilter) filter = s.thumbnailFilter;
+  } catch (e) { /* fall back to defaults */ }
+
+  const panel = el("div", { class: "lib-row" });
+  panel.appendChild(el("div", {
+    html: `<div class="lib-name">${esc(t("admin.thumbFilterTitle"))}</div><div class="lib-path">${esc(t("admin.thumbFilterHint"))}</div>`,
+  }));
+
+  const actions = el("div", { class: "lib-actions" });
   const filterSelect = el("select", { class: "control sm" });
   ["lanczos", "catmullrom", "linear", "box", "nearest"].forEach((val) => {
     const opt = el("option", { text: t("admin.thumbFilter." + val) });
@@ -2414,7 +2431,7 @@ async function buildThumbWorkersPanel() {
     filterSelect.appendChild(opt);
   });
   filterSelect.addEventListener("change", (ev) => {
-    save({ thumbnailFilter: ev.target.value });
+    saveAdminSetting({ thumbnailFilter: ev.target.value });
   });
   actions.appendChild(filterSelect);
 
@@ -2464,6 +2481,44 @@ async function buildRowLimitPanel() {
   return panel;
 }
 
+// How many scan timing reports to retain before older ones are pruned.
+async function buildScanReportLimitPanel() {
+  let current = 10;
+  try {
+    const s = await api("/api/admin/settings");
+    if (s.scanReportLimit) current = s.scanReportLimit;
+  } catch (e) { /* fall back to default */ }
+
+  const panel = el("div", { class: "lib-row" });
+  panel.appendChild(el("div", {
+    html: `<div class="lib-name">${esc(t("admin.reportLimit"))}</div><div class="lib-path">${esc(t("admin.reportLimitHint"))}</div>`,
+  }));
+
+  const actions = el("div", { class: "lib-actions" });
+  const select = el("select", { class: "control sm" });
+  [5, 10, 15, 20, 30, 50].forEach((val) => {
+    const opt = el("option", { text: String(val) });
+    opt.value = String(val);
+    if (val === current) opt.selected = true;
+    select.appendChild(opt);
+  });
+  select.addEventListener("change", async (ev) => {
+    const n = parseInt(ev.target.value, 10) || 10;
+    try {
+      await api("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scanReportLimit: n }),
+      });
+    } catch (e) {
+      alert(t("alert.error", { msg: e.message }));
+    }
+  });
+  actions.appendChild(select);
+  panel.appendChild(actions);
+  return panel;
+}
+
 // ── admin ──
 async function renderAdmin(main) {
   const libs = await api("/api/admin/libraries");
@@ -2501,8 +2556,10 @@ async function renderAdmin(main) {
 
   const settingsGroup = el("div", { class: "settings-group" });
   settingsGroup.appendChild(await buildAutoScanPanel());
-  settingsGroup.appendChild(await buildThumbWorkersPanel());
+  settingsGroup.appendChild(await buildScanThreadsPanel());
+  settingsGroup.appendChild(await buildThumbFilterPanel());
   settingsGroup.appendChild(await buildRowLimitPanel());
+  settingsGroup.appendChild(await buildScanReportLimitPanel());
   main.appendChild(settingsGroup);
 }
 
@@ -2616,7 +2673,178 @@ async function renderJobs(main) {
   const list = el("div", { id: "jobs-list" });
   main.appendChild(list);
 
-  await refreshJobs(list);
+  // Scan timing reports: a separate, persistent list (covers manual and
+  // auto-scans alike, since auto-scans have no job row).
+  const reportsHeader = el("div", { class: "section-header", style: "margin-top:28px" });
+  reportsHeader.appendChild(el("div", {
+    html: `<div class="section-title">${esc(t("reports.title"))}</div><div class="section-sub">${esc(t("reports.subtitle"))}</div>`,
+  }));
+  main.appendChild(reportsHeader);
+  const reportsList = el("div", { id: "reports-list" });
+  main.appendChild(reportsList);
+
+  await Promise.all([refreshJobs(list), refreshReports(reportsList)]);
+}
+
+async function refreshReports(list) {
+  let reports;
+  try {
+    reports = await api("/api/admin/reports");
+  } catch (e) {
+    list.innerHTML = `<div class="empty">${esc(t("alert.error", { msg: e.message }))}</div>`;
+    return;
+  }
+  if (!document.body.contains(list)) return;
+  list.innerHTML = "";
+  if (!reports || reports.length === 0) {
+    list.appendChild(el("div", { class: "empty", text: t("reports.none") }));
+    return;
+  }
+  reports.forEach((r) => list.appendChild(buildReportRow(r)));
+}
+
+function buildReportRow(r) {
+  const row = el("div", { class: "lib-row" });
+  let statusPill;
+  if (r.status === "success") statusPill = `<span class="pill pill-ok">${esc(t("jobs.success"))}</span>`;
+  else if (r.status === "canceled") statusPill = `<span class="pill">${esc(t("reports.canceled"))}</span>`;
+  else statusPill = `<span class="pill pill-danger">${esc(t("jobs.failed"))}</span>`;
+
+  const left = el("div");
+  left.appendChild(el("div", {
+    class: "lib-name",
+    html: `${esc(r.libraryName || "—")} ${statusPill}`,
+  }));
+  const when = r.finishedAt ? new Date(r.finishedAt).toLocaleString()
+    : (r.startedAt ? new Date(r.startedAt).toLocaleString() : "");
+  left.appendChild(el("div", { class: "lib-path", text: when }));
+  row.appendChild(left);
+
+  const actions = el("div", { class: "lib-actions" });
+  actions.appendChild(el("button", {
+    class: "btn sm",
+    text: t("reports.view"),
+    onclick: () => openReportModal(r.id),
+  }));
+  row.appendChild(actions);
+  return row;
+}
+
+// fmtMs renders a millisecond value as a compact, human-readable duration.
+function fmtMs(ms) {
+  if (ms == null) return "—";
+  if (ms >= 60000) {
+    const m = Math.floor(ms / 60000);
+    const s = Math.round((ms % 60000) / 1000);
+    return `${m}m ${s}s`;
+  }
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  if (ms >= 10) return `${Math.round(ms)} ms`;
+  return `${ms.toFixed(1)} ms`;
+}
+
+function reportTaskLabel(key) {
+  const label = t("reports.task." + key);
+  return label === "reports.task." + key ? key : label;
+}
+
+function reportPhaseLabel(name) {
+  const label = t("jobs.phase." + name);
+  return label === "jobs.phase." + name ? name : label;
+}
+
+async function openReportModal(id) {
+  let rec;
+  try {
+    rec = await api(`/api/admin/reports/${encodeURIComponent(id)}`);
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+    return;
+  }
+  const rep = rec.report || {};
+  const overlay = el("div", { class: "modal" });
+  const card = el("div", { class: "modal-card", style: "max-width:720px;width:92vw;max-height:88vh;overflow:auto" });
+
+  const statusKey = rec.status === "success" ? "jobs.success" : (rec.status === "canceled" ? "reports.canceled" : "jobs.failed");
+  card.appendChild(el("div", { class: "modal-title", text: `${rec.libraryName || "—"} · ${t(statusKey)}` }));
+
+  const counts = rep.counts || {};
+  const summary = [
+    [t("reports.total"), fmtMs(rep.wallMs)],
+    [t("reports.photos"), counts.photos || 0],
+    [t("reports.thumbsGenerated"), counts.thumbsGenerated || 0],
+    [t("reports.thumbsSkipped"), counts.thumbsSkipped || 0],
+    [t("reports.metaIndexed"), counts.metaIndexed || 0],
+    [t("reports.metaSkipped"), counts.metaSkipped || 0],
+  ];
+  const summaryWrap = el("div", { class: "report-summary" });
+  summary.forEach(([label, val]) => {
+    summaryWrap.appendChild(el("div", {
+      class: "report-stat",
+      html: `<div class="report-stat-val">${esc(String(val))}</div><div class="report-stat-label">${esc(label)}</div>`,
+    }));
+  });
+  card.appendChild(summaryWrap);
+
+  // Per-task measurements table.
+  if (rep.tasks && rep.tasks.length) {
+    card.appendChild(el("div", { class: "report-section-title", text: t("reports.tasks") }));
+    card.appendChild(buildReportTable(
+      [t("reports.col.task"), t("reports.col.count"), t("reports.col.total"), t("reports.col.avg"), t("reports.col.min"), t("reports.col.max")],
+      rep.tasks.map((tk) => [reportTaskLabel(tk.key), String(tk.count), fmtMs(tk.totalMs), fmtMs(tk.avgMs), fmtMs(tk.minMs), fmtMs(tk.maxMs)]),
+    ));
+  }
+
+  // Per-phase wall-clock table.
+  if (rep.phases && rep.phases.length) {
+    card.appendChild(el("div", { class: "report-section-title", text: t("reports.phases") }));
+    card.appendChild(buildReportTable(
+      [t("reports.col.phase"), t("reports.col.total")],
+      rep.phases.map((ph) => [reportPhaseLabel(ph.name), fmtMs(ph.wallMs)]),
+    ));
+  }
+
+  // Capped error excerpt.
+  const errs = rep.errors || {};
+  if (errs.total > 0) {
+    card.appendChild(el("div", { class: "report-section-title", text: `${t("reports.errors")} (${errs.total})` }));
+    const errList = el("div", { class: "report-errors" });
+    (errs.items || []).forEach((e) => {
+      errList.appendChild(el("div", {
+        class: "report-error",
+        html: `<span class="pill">${esc(reportPhaseLabel(e.phase))}</span> <span class="report-error-item">${esc(e.item)}</span><div class="report-error-msg">${esc(e.msg)}</div>`,
+      }));
+    });
+    if (errs.truncated) {
+      errList.appendChild(el("div", { class: "report-error-more", text: t("reports.moreErrors", { n: errs.total - (errs.items || []).length }) }));
+    }
+    card.appendChild(errList);
+  }
+
+  const acts = el("div", { class: "modal-actions" });
+  acts.appendChild(el("button", { class: "btn", text: t("common.close"), onclick: () => overlay.remove() }));
+  card.appendChild(acts);
+
+  overlay.appendChild(card);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+function buildReportTable(headers, rows) {
+  const table = el("table", { class: "report-table" });
+  const thead = el("thead");
+  const htr = el("tr");
+  headers.forEach((h, i) => htr.appendChild(el("th", { text: h, class: i === 0 ? "" : "num" })));
+  thead.appendChild(htr);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  rows.forEach((cells) => {
+    const tr = el("tr");
+    cells.forEach((c, i) => tr.appendChild(el("td", { text: c, class: i === 0 ? "" : "num" })));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  return table;
 }
 
 async function refreshJobs(list) {
@@ -2695,10 +2923,33 @@ function buildJobRow(j) {
 
   const when = j.finishedAt ? new Date(j.finishedAt).toLocaleString()
     : (j.startedAt ? new Date(j.startedAt).toLocaleString() : "");
-  row.appendChild(el("div", { class: "lib-actions" }, [
+  const rightActions = el("div", { class: "lib-actions" }, [
     el("span", { class: "section-sub", text: when }),
-  ]));
+  ]);
+  if (j.status === "running") {
+    rightActions.appendChild(el("button", {
+      class: "btn sm danger",
+      html: `${icon("stop")} ${esc(t("jobs.stop"))}`,
+      onclick: (ev) => cancelJob(j.id, ev.currentTarget),
+    }));
+  }
+  row.appendChild(rightActions);
   return row;
+}
+
+async function cancelJob(id, btn) {
+  if (!confirm(t("jobs.stopConfirm"))) return;
+  if (btn) { btn.disabled = true; btn.textContent = t("jobs.stopping"); }
+  try {
+    await api(`/api/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+    if (btn) { btn.disabled = false; }
+    return;
+  }
+  // Refresh promptly so the row flips to "failed · interrupted by user".
+  const list = document.getElementById("jobs-list");
+  if (list) await refreshJobs(list);
 }
 
 let editingUsername = null;

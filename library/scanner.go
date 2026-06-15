@@ -2,6 +2,8 @@ package library
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -194,13 +196,26 @@ func (sc *Scanner) scanWithJob(lib *Library, source string, jp *JobProgress, mod
 		jp.SetPhase("index", 0)
 	}
 
+	// Collect per-task timings for this run so a timing report can be persisted
+	// at the end — including when the scan fails or is canceled.
+	metrics := newScanMetrics()
+
+	indexStart := time.Now()
 	err := sc.scan(lib)
+	metrics.addPhase("index", time.Since(indexStart))
 
 	// Phase 2: (re)generate thumbnails and index metadata so a finished scan
 	// means the gallery is ready (rather than lazily generated on first view).
 	// A deep scan additionally reconciles the cache by removing orphans.
 	if err == nil && sc.thumbs != nil {
-		sc.thumbnailPhase(lib, jp, mode)
+		sc.thumbnailPhase(lib, jp, mode, metrics)
+	}
+
+	// An admin stop surfaces as a job failure with a clear message rather than a
+	// silent partial success. Quick re-scans resume cheaply (already-indexed
+	// photos are skipped), so stopping to adjust settings is safe.
+	if err == nil && jp.Canceled() {
+		err = ErrJobCanceled
 	}
 
 	sc.updateProgress(lib.ID, func(p *ScanProgress) {
@@ -214,12 +229,47 @@ func (sc *Scanner) scanWithJob(lib *Library, source string, jp *JobProgress, mod
 	})
 	// Persist failures so admins can review them later (the in-memory progress
 	// is ephemeral and background/auto-scan failures otherwise only hit stdout).
-	if err != nil && sc.store != nil {
+	// A user-initiated stop is expected, not a fault, so it is not logged.
+	if err != nil && !errors.Is(err, ErrJobCanceled) && sc.store != nil {
 		if recErr := sc.store.RecordScanError(lib.ID, lib.Name, source, err.Error()); recErr != nil {
 			log.Printf("record scan error for %s: %v", lib.ID, recErr)
 		}
 	}
+
+	// Persist the timing report regardless of outcome (success, failure, or a
+	// user cancel), so the admin can always inspect where the time went.
+	sc.persistScanReport(lib, jp, metrics, err)
 	return err
+}
+
+// persistScanReport finalizes the run's metrics into a JSON report and stores it
+// (pruning to the configured retention). Reporting failures are logged but never
+// affect the scan's own result.
+func (sc *Scanner) persistScanReport(lib *Library, jp *JobProgress, metrics *scanMetrics, scanErr error) {
+	if sc.store == nil || metrics == nil {
+		return
+	}
+	status := JobSuccess
+	switch {
+	case errors.Is(scanErr, ErrJobCanceled):
+		status = "canceled"
+	case scanErr != nil:
+		status = JobFailed
+	}
+	report := metrics.finalize()
+	payload, mErr := json.Marshal(report)
+	if mErr != nil {
+		log.Printf("scan report for %s: marshal: %v", lib.ID, mErr)
+		return
+	}
+	var jobID string
+	if jp != nil {
+		jobID = jp.id
+	}
+	started := time.Now().Add(-time.Duration(report.WallMs) * time.Millisecond)
+	if rErr := sc.store.RecordScanReport(jobID, lib.ID, lib.Name, status, started, time.Now(), string(payload)); rErr != nil {
+		log.Printf("scan report for %s: record: %v", lib.ID, rErr)
+	}
 }
 
 func (sc *Scanner) scan(lib *Library) error {
@@ -295,8 +345,9 @@ func (sc *Scanner) scan(lib *Library) error {
 // a deep scan — removes orphaned thumbnails ("cleanup"). Sharing the photo list
 // and cache snapshot across all steps avoids re-walking the tree and
 // re-statting the cache per step.
-func (sc *Scanner) thumbnailPhase(lib *Library, jp *JobProgress, mode ScanMode) {
+func (sc *Scanner) thumbnailPhase(lib *Library, jp *JobProgress, mode ScanMode, metrics *scanMetrics) {
 	rels := sc.collectPhotoRels(lib)
+	metrics.add("photos", int64(len(rels)))
 
 	// Snapshot the cache directory once so each worker can check for an existing
 	// thumbnail with a map lookup instead of an os.Stat per photo, and so the
@@ -310,11 +361,18 @@ func (sc *Scanner) thumbnailPhase(lib *Library, jp *JobProgress, mode ScanMode) 
 		cacheIdx = nil
 	}
 
-	sc.generateThumbnails(lib, rels, cacheIdx, jp, mode)
-	sc.indexMetadata(lib, rels, jp, mode)
+	thumbStart := time.Now()
+	sc.generateThumbnails(lib, rels, cacheIdx, jp, mode, metrics)
+	metrics.addPhase("thumbnails", time.Since(thumbStart))
+
+	metaStart := time.Now()
+	sc.indexMetadata(lib, rels, jp, mode, metrics)
+	metrics.addPhase("metadata", time.Since(metaStart))
 
 	if mode == ScanDeep {
+		cleanupStart := time.Now()
 		sc.cleanupOrphanThumbs(lib, rels, cacheIdx, jp)
+		metrics.addPhase("cleanup", time.Since(cleanupStart))
 	}
 }
 
@@ -344,7 +402,7 @@ func (sc *Scanner) collectPhotoRels(lib *Library) []string {
 // under the progress lock) and to the optional JobProgress. Failures on
 // individual photos are the work function's concern; this helper only drives
 // the pool and progress.
-func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *JobProgress, setTotal func(*ScanProgress, int), bump func(*ScanProgress), work func(rel string) error) {
+func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *JobProgress, metrics *scanMetrics, setTotal func(*ScanProgress, int), bump func(*ScanProgress), work func(rel string) error) {
 	total := len(rels)
 	sc.updateProgress(lib.ID, func(p *ScanProgress) {
 		p.Phase = phase
@@ -372,7 +430,13 @@ func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *
 		go func() {
 			defer wg.Done()
 			for rel := range jobs {
-				sc.runOnePhotoItem(lib, phase, rel, jp, work)
+				// Drain remaining items without doing work once the admin has
+				// stopped the job, so the dispatcher's send unblocks and the
+				// phase ends promptly.
+				if jp.Canceled() {
+					continue
+				}
+				sc.runOnePhotoItem(lib, phase, rel, jp, metrics, work)
 				sc.updateProgress(lib.ID, bump)
 				if jp != nil {
 					doneMu.Lock()
@@ -385,6 +449,9 @@ func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *
 		}()
 	}
 	for _, rel := range rels {
+		if jp.Canceled() {
+			break
+		}
 		jobs <- rel
 	}
 	close(jobs)
@@ -414,7 +481,7 @@ const photoHardTimeout = 2 * time.Minute
 // crash the scan), and watches the wall-clock so a single file that blocks
 // forever (stalled storage, decoder loop) is warned about and ultimately
 // skipped instead of freezing the phase.
-func (sc *Scanner) runOnePhotoItem(lib *Library, phase, rel string, jp *JobProgress, work func(rel string) error) {
+func (sc *Scanner) runOnePhotoItem(lib *Library, phase, rel string, jp *JobProgress, metrics *scanMetrics, work func(rel string) error) {
 	sc.updateProgress(lib.ID, func(p *ScanProgress) { p.CurrentDir = rel })
 	if jp != nil {
 		jp.SetCurrent(rel)
@@ -442,7 +509,11 @@ func (sc *Scanner) runOnePhotoItem(lib *Library, phase, rel string, jp *JobProgr
 		select {
 		case <-done:
 			// Safe to read workErr: the channel close happens-after the write.
+			// Record the per-photo wall-clock for this phase so the report can
+			// show the per-item distribution (min/max/avg) alongside subtasks.
+			metrics.record(phase, time.Since(start))
 			if workErr != nil {
+				metrics.addError(phase, rel, workErr.Error())
 				sc.recordPhotoError(lib, phase, rel, workErr)
 			}
 			return
@@ -454,8 +525,10 @@ func (sc *Scanner) runOnePhotoItem(lib *Library, phase, rel string, jp *JobProgr
 			// here (the goroutine may still write it), so there's no data race.
 			log.Printf("scan %s: giving up on %q after %s; skipping it so the scan can continue",
 				phase, rel, time.Since(start).Round(time.Second))
-			sc.recordPhotoError(lib, phase, rel,
-				fmt.Errorf("timed out after %s (stuck file or slow/unreachable storage)", photoHardTimeout))
+			metrics.record(phase, time.Since(start))
+			timeoutMsg := fmt.Sprintf("timed out after %s (stuck file or slow/unreachable storage)", photoHardTimeout)
+			metrics.addError(phase, rel, timeoutMsg)
+			sc.recordPhotoError(lib, phase, rel, fmt.Errorf("%s", timeoutMsg))
 			return
 		}
 	}
@@ -506,20 +579,25 @@ func (sc *Scanner) clearLibraryErrors(libraryID string) {
 // It only ADDS or REFRESHES thumbnails; it never deletes. Removing orphaned
 // thumbnails is the deep scan's separate cleanup step, so a quick scan is never
 // destructive.
-func (sc *Scanner) generateThumbnails(lib *Library, rels []string, cacheIdx CacheIndex, jp *JobProgress, mode ScanMode) {
+func (sc *Scanner) generateThumbnails(lib *Library, rels []string, cacheIdx CacheIndex, jp *JobProgress, mode ScanMode, metrics *scanMetrics) {
 	deep := mode == ScanDeep
-	sc.runPhotoPhase(lib, "thumbnails", rels, jp,
+	sc.runPhotoPhase(lib, "thumbnails", rels, jp, metrics,
 		func(p *ScanProgress, total int) { p.ThumbTotal = total; p.ThumbDone = 0 },
 		func(p *ScanProgress) { p.ThumbDone++ },
 		func(rel string) error {
 			var genErr error
+			var generated bool
 			if deep {
-				_, genErr = sc.thumbs.EnsureIndexed(rel, cacheIdx)
+				generated, genErr = sc.thumbs.EnsureIndexed(rel, cacheIdx, metrics)
 			} else {
-				_, genErr = sc.thumbs.EnsurePresent(rel, cacheIdx)
+				generated, genErr = sc.thumbs.EnsurePresent(rel, cacheIdx, metrics)
 			}
 			if genErr != nil {
 				log.Printf("thumbnail %q: %v", rel, genErr)
+			} else if generated {
+				metrics.incr("thumbsGenerated")
+			} else {
+				metrics.incr("thumbsSkipped")
 			}
 			return genErr
 		})
@@ -529,12 +607,12 @@ func (sc *Scanner) generateThumbnails(lib *Library, rels []string, cacheIdx Cach
 // given photos (phase "metadata"), with the same quick/deep semantics as
 // indexPhotoMeta: quick skips already-indexed photos via a DB lookup with no
 // source stat; deep re-checks each source's mtime/size.
-func (sc *Scanner) indexMetadata(lib *Library, rels []string, jp *JobProgress, mode ScanMode) {
+func (sc *Scanner) indexMetadata(lib *Library, rels []string, jp *JobProgress, mode ScanMode, metrics *scanMetrics) {
 	deep := mode == ScanDeep
-	sc.runPhotoPhase(lib, "metadata", rels, jp,
+	sc.runPhotoPhase(lib, "metadata", rels, jp, metrics,
 		func(p *ScanProgress, total int) { p.MetaTotal = total; p.MetaDone = 0 },
 		func(p *ScanProgress) { p.MetaDone++ },
-		func(rel string) error { return sc.indexPhotoMeta(lib.ID, rel, deep) })
+		func(rel string) error { return sc.indexPhotoMeta(lib.ID, rel, deep, metrics) })
 }
 
 // indexPhotoMeta extracts and stores per-photo metadata (EXIF + Google sidecar
@@ -546,9 +624,10 @@ func (sc *Scanner) indexMetadata(lib *Library, rels []string, jp *JobProgress, m
 // no files; only newly seen photos are read and indexed. In deep mode the
 // source is stat'd and its mtime/size compared against the stored row, so a
 // photo edited in place is re-indexed.
-func (sc *Scanner) indexPhotoMeta(libraryID, rel string, deep bool) error {
+func (sc *Scanner) indexPhotoMeta(libraryID, rel string, deep bool, metrics *scanMetrics) error {
 	if !deep {
 		if _, _, pv, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok && pv == photoMetaVersion {
+			metrics.incr("metaSkipped")
 			return nil // already indexed at the current version; trust it
 		}
 	}
@@ -563,19 +642,21 @@ func (sc *Scanner) indexPhotoMeta(libraryID, rel string, deep bool) error {
 	if deep {
 		if pm, ps, pv, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok &&
 			pm == mtime && ps == size && pv == photoMetaVersion {
+			metrics.incr("metaSkipped")
 			return nil // unchanged since last index, and indexed at the current version
 		}
 	}
 
-	m := extractPhotoMeta(abs)
+	m := extractPhotoMeta(abs, metrics)
 	m.PhotoPath = rel
 	m.LibraryID = libraryID
 	m.FileMtime = mtime
 	m.FileSize = size
-	if err := sc.store.UpsertPhotoMeta(m); err != nil {
+	if err := metrics.timeIt("meta.sql", func() error { return sc.store.UpsertPhotoMeta(m) }); err != nil {
 		log.Printf("photo meta %q: upsert: %v", rel, err)
 		return fmt.Errorf("upsert: %w", err)
 	}
+	metrics.incr("metaIndexed")
 	return nil
 }
 
