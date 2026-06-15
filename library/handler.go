@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -351,6 +352,23 @@ func (h *Handler) AdminListJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+// AdminDebugGoroutines dumps every goroutine's stack as plain text, so when a
+// scan appears stuck an admin can see exactly which call the worker is parked on
+// (a blocked syscall on a NAS read, a lock, a decode loop, etc.). It is a
+// read-only diagnostic with no side effects.
+func (h *Handler) AdminDebugGoroutines(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	profile := pprof.Lookup("goroutine")
+	if profile == nil {
+		writeErr(w, http.StatusInternalServerError, "goroutine profile unavailable")
+		return
+	}
+	// debug=2 prints full, human-readable per-goroutine stack traces.
+	if err := profile.WriteTo(w, 2); err != nil {
+		log.Printf("debug goroutines: %v", err)
+	}
 }
 
 // AdminScanProgress reports the live progress of a library scan.
