@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,15 @@ var ErrNotFound = errors.New("not found")
 // Store provides persistence operations over the SQLite database.
 type Store struct {
 	db *sql.DB
+
+	// quarantine is an in-memory mirror of the media_quarantine table's keys,
+	// so the hot read paths that enumerate photos (album listings, cover
+	// fallbacks, search, TV) can exclude undecodable files with a lock-free map
+	// lookup instead of a per-photo DB query. It is loaded lazily and kept in
+	// sync by the quarantine mutators below.
+	quarMu     sync.RWMutex
+	quarSet    map[string]bool
+	quarLoaded bool
 }
 
 // NewStore wraps a database handle.
@@ -723,6 +733,159 @@ func (s *Store) ListScanErrors() ([]*ScanError, error) {
 func (s *Store) ClearScanErrors() error {
 	_, err := s.db.Exec(`DELETE FROM scan_errors`)
 	return err
+}
+
+// --- media quarantine ---
+
+// QuarantinedMedia is a single photo that failed to decode and was quarantined.
+type QuarantinedMedia struct {
+	PhotoPath   string    `json:"photoPath"`
+	LibraryID   string    `json:"libraryId"`
+	LibraryName string    `json:"libraryName"`
+	Phase       string    `json:"phase"`
+	Reason      string    `json:"reason"`
+	FirstSeen   time.Time `json:"firstSeen"`
+	LastSeen    time.Time `json:"lastSeen"`
+}
+
+// loadQuarantineSet populates the in-memory quarantine mirror from the table on
+// first use. Subsequent calls are cheap no-ops; the mutators keep the set in
+// sync so a reload is never needed for correctness.
+func (s *Store) loadQuarantineSet() {
+	s.quarMu.RLock()
+	loaded := s.quarLoaded
+	s.quarMu.RUnlock()
+	if loaded {
+		return
+	}
+	set := map[string]bool{}
+	if rows, err := s.db.Query(`SELECT photo_path FROM media_quarantine`); err == nil {
+		for rows.Next() {
+			var p string
+			if rows.Scan(&p) == nil {
+				set[p] = true
+			}
+		}
+		rows.Close()
+	}
+	s.quarMu.Lock()
+	if !s.quarLoaded { // another goroutine may have loaded it meanwhile
+		s.quarSet = set
+		s.quarLoaded = true
+	}
+	s.quarMu.Unlock()
+}
+
+// IsQuarantined reports whether a photo (URL token) is quarantined, using the
+// in-memory mirror so it is safe to call on hot photo-listing paths.
+func (s *Store) IsQuarantined(photoPath string) bool {
+	s.loadQuarantineSet()
+	s.quarMu.RLock()
+	defer s.quarMu.RUnlock()
+	return s.quarSet[photoPath]
+}
+
+// QuarantineMedia records (or refreshes) a photo that could not be decoded. The
+// first-seen timestamp is preserved across re-detections while reason/last-seen
+// are updated, so the row tracks when the problem first appeared and was last
+// observed. Keyed by the photo URL token (AbsToURLPath).
+func (s *Store) QuarantineMedia(photoPath, libraryID, libraryName, phase, reason string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO media_quarantine (photo_path, library_id, library_name, phase, reason, first_seen, last_seen)
+		 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		 ON CONFLICT(photo_path) DO UPDATE SET
+		   library_id = excluded.library_id,
+		   library_name = excluded.library_name,
+		   phase = excluded.phase,
+		   reason = excluded.reason,
+		   last_seen = CURRENT_TIMESTAMP`,
+		photoPath, nullIfEmpty(libraryID), libraryName, phase, reason)
+	if err != nil {
+		return err
+	}
+	s.quarMu.Lock()
+	if s.quarSet == nil {
+		s.quarSet = map[string]bool{}
+	}
+	s.quarSet[photoPath] = true
+	s.quarMu.Unlock()
+	return nil
+}
+
+// QuarantinedPaths returns the set of quarantined photo tokens, optionally
+// scoped to one library (empty libraryID returns all). The scan thumbnail phase
+// loads this once to skip known-broken files with an in-memory lookup instead
+// of re-attempting (and re-failing) a decode per file every scan.
+func (s *Store) QuarantinedPaths(libraryID string) (map[string]bool, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if libraryID == "" {
+		rows, err = s.db.Query(`SELECT photo_path FROM media_quarantine`)
+	} else {
+		rows, err = s.db.Query(`SELECT photo_path FROM media_quarantine WHERE library_id = ?`, libraryID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out[p] = true
+	}
+	return out, rows.Err()
+}
+
+// ListQuarantine returns all quarantined media, most recently seen first.
+func (s *Store) ListQuarantine() ([]*QuarantinedMedia, error) {
+	rows, err := s.db.Query(
+		`SELECT photo_path, COALESCE(library_id, ''), COALESCE(library_name, ''),
+		        phase, reason, first_seen, last_seen
+		 FROM media_quarantine ORDER BY last_seen DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*QuarantinedMedia{}
+	for rows.Next() {
+		var q QuarantinedMedia
+		if err := rows.Scan(&q.PhotoPath, &q.LibraryID, &q.LibraryName,
+			&q.Phase, &q.Reason, &q.FirstSeen, &q.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, &q)
+	}
+	return out, rows.Err()
+}
+
+// ReleaseQuarantine removes a single photo from quarantine so the next scan
+// re-attempts its thumbnail (used after the source file has been fixed).
+func (s *Store) ReleaseQuarantine(photoPath string) error {
+	if _, err := s.db.Exec(`DELETE FROM media_quarantine WHERE photo_path = ?`, photoPath); err != nil {
+		return err
+	}
+	s.quarMu.Lock()
+	delete(s.quarSet, photoPath)
+	s.quarMu.Unlock()
+	return nil
+}
+
+// ClearQuarantine empties the quarantine so every previously broken photo is
+// re-attempted on the next scan.
+func (s *Store) ClearQuarantine() error {
+	if _, err := s.db.Exec(`DELETE FROM media_quarantine`); err != nil {
+		return err
+	}
+	s.quarMu.Lock()
+	s.quarSet = map[string]bool{}
+	s.quarLoaded = true
+	s.quarMu.Unlock()
+	return nil
 }
 
 // Job status values.

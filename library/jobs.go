@@ -229,12 +229,15 @@ func (m *JobManager) loop() {
 
 		p := &JobProgress{mgr: m, id: task.id, ctx: ctx}
 		err := task.run(p)
-		cancel()
 		// A canceled context means the stop was admin-initiated; normalize the
-		// failure message even if the run function returned its own error.
+		// failure message even if the run function returned its own error. This
+		// must be checked BEFORE our own cleanup cancel() below, otherwise that
+		// call would make ctx.Err() non-nil and mislabel every finished job as
+		// "interrupted by user".
 		if ctx.Err() != nil {
 			err = ErrJobCanceled
 		}
+		cancel()
 
 		status, msg := JobSuccess, ""
 		if err != nil {

@@ -2653,7 +2653,10 @@ async function renderAdminUsers(main) {
 
 // ── admin: scan error log ──
 async function renderErrorLog(main) {
-  const errors = await api("/api/admin/errors");
+  const [errors, quarantine] = await Promise.all([
+    api("/api/admin/errors"),
+    api("/api/admin/quarantine").catch(() => []),
+  ]);
   main.innerHTML = "";
   const header = el("div", { class: "section-header" });
   header.appendChild(el("div", { html: `<div class="section-title">${esc(t("errors.title"))}</div><div class="section-sub">${esc(t("errors.subtitle"))}</div>` }));
@@ -2664,19 +2667,53 @@ async function renderErrorLog(main) {
 
   if (!errors || errors.length === 0) {
     main.appendChild(el("div", { class: "empty", text: t("errors.none") }));
+  } else {
+    errors.forEach((e) => {
+      const when = e.occurredAt ? new Date(e.occurredAt).toLocaleString() : "";
+      const lib = e.libraryName || e.libraryId || "—";
+      const row = el("div", { class: "lib-row" });
+      row.appendChild(el("div", {
+        html: `<div class="lib-name">${esc(lib)} <span class="pill">${esc(e.source || "")}</span></div>` +
+          `<div class="lib-path err-msg">${esc(e.message)}</div>`,
+      }));
+      row.appendChild(el("div", { class: "lib-actions" }, [
+        el("span", { class: "section-sub", text: when }),
+      ]));
+      main.appendChild(row);
+    });
+  }
+
+  renderQuarantine(main, quarantine || []);
+}
+
+// renderQuarantine appends the "quarantined media" section: photos that could
+// not be decoded (even after repair) and so are hidden from users until the
+// source file is fixed and the photo released for a re-scan.
+function renderQuarantine(main, items) {
+  const header = el("div", { class: "section-header", style: "margin-top:28px" });
+  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("quarantine.title"))}</div><div class="section-sub">${esc(t("quarantine.subtitle"))}</div>` }));
+  if (items.length) {
+    header.appendChild(el("button", { class: "btn", html: `${icon("trash")} ${esc(t("quarantine.clear"))}`, onclick: () => clearQuarantine() }));
+  }
+  main.appendChild(header);
+
+  if (!items.length) {
+    main.appendChild(el("div", { class: "empty", text: t("quarantine.none") }));
     return;
   }
 
-  errors.forEach((e) => {
-    const when = e.occurredAt ? new Date(e.occurredAt).toLocaleString() : "";
-    const lib = e.libraryName || e.libraryId || "—";
+  items.forEach((q) => {
+    const when = q.lastSeen ? new Date(q.lastSeen).toLocaleString() : "";
+    const lib = q.libraryName || q.libraryId || "—";
     const row = el("div", { class: "lib-row" });
     row.appendChild(el("div", {
-      html: `<div class="lib-name">${esc(lib)} <span class="pill">${esc(e.source || "")}</span></div>` +
-        `<div class="lib-path err-msg">${esc(e.message)}</div>`,
+      html: `<div class="lib-name">${esc(lib)} <span class="pill">${esc(q.phase || "")}</span></div>` +
+        `<div class="lib-path">${esc(q.photoPath)}</div>` +
+        `<div class="lib-path err-msg">${esc(q.reason)}</div>`,
     }));
     row.appendChild(el("div", { class: "lib-actions" }, [
       el("span", { class: "section-sub", text: when }),
+      el("button", { class: "btn sm", text: t("quarantine.release"), onclick: () => releaseQuarantine(q.photoPath) }),
     ]));
     main.appendChild(row);
   });
@@ -2686,6 +2723,25 @@ async function clearErrorLog() {
   if (!confirm(t("errors.confirmClear"))) return;
   try {
     await api("/api/admin/errors", { method: "DELETE" });
+    await renderErrorLog($("#main"));
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+async function releaseQuarantine(path) {
+  try {
+    await api("/api/admin/quarantine/release", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+    await renderErrorLog($("#main"));
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+async function clearQuarantine() {
+  if (!confirm(t("quarantine.confirmClear"))) return;
+  try {
+    await api("/api/admin/quarantine", { method: "DELETE" });
     await renderErrorLog($("#main"));
   } catch (e) {
     alert(t("alert.error", { msg: e.message }));
@@ -2706,9 +2762,10 @@ async function renderJobs(main) {
   const list = el("div", { id: "jobs-list" });
   main.appendChild(list);
 
-  // Scan timing reports: a separate, persistent list (covers manual and
-  // auto-scans alike, since auto-scans have no job row).
-  const reportsHeader = el("div", { class: "section-header", style: "margin-top:28px" });
+  // Scan timing reports tied to a visible job are shown inline on that job row
+  // (see buildJobRow). This section only holds "orphan" reports: auto-scans,
+  // which have no job, and reports whose job has been pruned from history.
+  const reportsHeader = el("div", { class: "section-header", id: "reports-header", style: "margin-top:28px" });
   reportsHeader.appendChild(el("div", {
     html: `<div class="section-title">${esc(t("reports.title"))}</div><div class="section-sub">${esc(t("reports.subtitle"))}</div>`,
   }));
@@ -2716,23 +2773,21 @@ async function renderJobs(main) {
   const reportsList = el("div", { id: "reports-list" });
   main.appendChild(reportsList);
 
-  await Promise.all([refreshJobs(list), refreshReports(reportsList)]);
+  await refreshJobs(list);
 }
 
-async function refreshReports(list) {
-  let reports;
-  try {
-    reports = await api("/api/admin/reports");
-  } catch (e) {
-    list.innerHTML = `<div class="empty">${esc(t("alert.error", { msg: e.message }))}</div>`;
-    return;
-  }
-  if (!document.body.contains(list)) return;
+// renderOrphanReports fills the standalone reports section with reports that are
+// not attached to a visible job row, hiding the section entirely when empty.
+function renderOrphanReports(reports) {
+  const list = document.getElementById("reports-list");
+  const header = document.getElementById("reports-header");
+  if (!list) return;
   list.innerHTML = "";
   if (!reports || reports.length === 0) {
-    list.appendChild(el("div", { class: "empty", text: t("reports.none") }));
+    if (header) header.style.display = "none";
     return;
   }
+  if (header) header.style.display = "";
   reports.forEach((r) => list.appendChild(buildReportRow(r)));
 }
 
@@ -2810,6 +2865,9 @@ async function openReportModal(id) {
     [t("reports.metaIndexed"), counts.metaIndexed || 0],
     [t("reports.metaSkipped"), counts.metaSkipped || 0],
   ];
+  if (counts.thumbsQuarantined) {
+    summary.push([t("reports.thumbsQuarantined"), counts.thumbsQuarantined]);
+  }
   const summaryWrap = el("div", { class: "report-summary" });
   summary.forEach(([label, val]) => {
     summaryWrap.appendChild(el("div", {
@@ -2881,9 +2939,14 @@ function buildReportTable(headers, rows) {
 }
 
 async function refreshJobs(list) {
-  let jobs;
+  let jobs, reports;
   try {
-    jobs = await api("/api/admin/jobs");
+    // Reports are fetched alongside jobs so each finished job row can link to
+    // its own timing report; the rest fall into the orphan-reports section.
+    [jobs, reports] = await Promise.all([
+      api("/api/admin/jobs"),
+      api("/api/admin/reports"),
+    ]);
   } catch (e) {
     list.innerHTML = `<div class="empty">${esc(t("alert.error", { msg: e.message }))}</div>`;
     return;
@@ -2891,17 +2954,24 @@ async function refreshJobs(list) {
   // Bail out if the user navigated away while the request was in flight.
   if (!document.body.contains(list)) return;
 
+  const reportByJob = new Map();
+  (reports || []).forEach((r) => { if (r.jobId) reportByJob.set(String(r.jobId), r); });
+
   list.innerHTML = "";
+  let anyRunning = false;
   if (!jobs || jobs.length === 0) {
     list.appendChild(el("div", { class: "empty", text: t("jobs.none") }));
-    return;
+  } else {
+    jobs.forEach((j) => {
+      if (j.status === "running") anyRunning = true;
+      list.appendChild(buildJobRow(j, reportByJob.get(String(j.id))));
+    });
   }
 
-  let anyRunning = false;
-  jobs.forEach((j) => {
-    if (j.status === "running") anyRunning = true;
-    list.appendChild(buildJobRow(j));
-  });
+  // Reports without a visible job row (auto-scans, or jobs pruned from history)
+  // keep their own list below.
+  const jobIds = new Set((jobs || []).map((j) => String(j.id)));
+  renderOrphanReports((reports || []).filter((r) => !r.jobId || !jobIds.has(String(r.jobId))));
 
   // Poll while a job is active so progress updates live.
   if (anyRunning) {
@@ -2917,7 +2987,7 @@ function jobTypeLabel(type) {
   return type;
 }
 
-function buildJobRow(j) {
+function buildJobRow(j, report) {
   const row = el("div", { class: "lib-row" });
   const target = j.target || "—";
   const left = el("div");
@@ -2979,6 +3049,13 @@ function buildJobRow(j) {
       class: "btn sm danger",
       html: `${icon("stop")} ${esc(t("jobs.cancel"))}`,
       onclick: (ev) => cancelJob(j.id, ev.currentTarget),
+    }));
+  } else if (report) {
+    // Finished job with a stored timing report: surface it inline.
+    rightActions.appendChild(el("button", {
+      class: "btn sm",
+      text: t("reports.view"),
+      onclick: () => openReportModal(report.id),
     }));
   }
   row.appendChild(rightActions);

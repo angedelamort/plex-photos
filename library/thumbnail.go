@@ -340,7 +340,7 @@ func thumbFresh(dst string, srcInfo os.FileInfo) bool {
 func (t *Thumbnailer) generate(src, dst string, m *scanMetrics) error {
 	var img image.Image
 	if err := m.timeIt("thumb.decode", func() (err error) {
-		img, err = imaging.Open(src, imaging.AutoOrientation(true))
+		img, err = decodeImageResilient(src)
 		return err
 	}); err != nil {
 		return fmt.Errorf("open image: %w", err)

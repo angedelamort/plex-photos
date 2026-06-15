@@ -386,12 +386,15 @@ func (sc *Scanner) collectPhotoRels(lib *Library) []string {
 	}
 	var rels []string
 	for _, dir := range albumDirs {
-		photos, err := sc.ListPhotos(dir)
+		// The scan must see every file on disk (including quarantined ones) so
+		// the thumbnail phase can re-evaluate them; use the raw enumeration
+		// rather than ListPhotos, which hides quarantined photos.
+		names, err := listImageNames(dir)
 		if err != nil {
 			continue
 		}
-		for _, p := range photos {
-			rels = append(rels, p.Path)
+		for _, n := range names {
+			rels = append(rels, AbsToURLPath(filepath.Join(dir, n)))
 		}
 	}
 	return rels
@@ -587,10 +590,22 @@ func (sc *Scanner) clearLibraryErrors(libraryID string) {
 // destructive.
 func (sc *Scanner) generateThumbnails(lib *Library, rels []string, cacheIdx CacheIndex, jp *JobProgress, mode ScanMode, metrics *scanMetrics) {
 	deep := mode == ScanDeep
+	// Load the set of already-quarantined photos once so we can skip re-decoding
+	// (and re-failing on) known-broken files with an in-memory lookup. A failed
+	// load is non-fatal: we simply attempt every file as before.
+	quarantined, qerr := sc.store.QuarantinedPaths(lib.ID)
+	if qerr != nil {
+		log.Printf("scan thumbnails %s: load quarantine: %v", lib.ID, qerr)
+		quarantined = map[string]bool{}
+	}
 	sc.runPhotoPhase(lib, "thumbnails", rels, jp, metrics,
 		func(p *ScanProgress, total int) { p.ThumbTotal = total; p.ThumbDone = 0 },
 		func(p *ScanProgress) { p.ThumbDone++ },
 		func(rel string) error {
+			if quarantined[rel] {
+				metrics.incr("thumbsQuarantined")
+				return nil // known-undecodable; don't retry until released
+			}
 			var genErr error
 			var generated bool
 			if deep {
@@ -600,6 +615,13 @@ func (sc *Scanner) generateThumbnails(lib *Library, rels []string, cacheIdx Cach
 			}
 			if genErr != nil {
 				log.Printf("thumbnail %q: %v", rel, genErr)
+				// A file we could read but not decode (even after repair) is
+				// quarantined so future scans skip it and users don't see a
+				// broken tile. Transient I/O errors are left to retry.
+				if errors.Is(genErr, ErrUndecodable) {
+					sc.quarantineMedia(lib, "thumbnails", rel, genErr)
+					metrics.incr("thumbsQuarantined")
+				}
 			} else if generated {
 				metrics.incr("thumbsGenerated")
 			} else {
@@ -607,6 +629,18 @@ func (sc *Scanner) generateThumbnails(lib *Library, rels []string, cacheIdx Cach
 			}
 			return genErr
 		})
+}
+
+// quarantineMedia persists a photo that could not be decoded so future scans
+// skip it and it is hidden from non-admin galleries. Failures to write the
+// quarantine row are logged but never abort the scan.
+func (sc *Scanner) quarantineMedia(lib *Library, phase, rel string, cause error) {
+	if sc.store == nil {
+		return
+	}
+	if err := sc.store.QuarantineMedia(rel, lib.ID, lib.Name, phase, cause.Error()); err != nil {
+		log.Printf("quarantine media %q: %v", rel, err)
+	}
 }
 
 // indexMetadata indexes per-photo metadata (EXIF + sidecar + geocode) for the
@@ -929,9 +963,12 @@ func pruneNodes(tx *sql.Tx, libraryID string, seen map[string]bool) error {
 	return nil
 }
 
-// ListPhotos returns the image files in an album directory, sorted by name.
-func (sc *Scanner) ListPhotos(albumFSPath string) ([]Photo, error) {
-	entries, err := os.ReadDir(albumFSPath)
+// listImageNames returns the sorted base names of every image file directly in
+// dir. It is the raw enumeration used by the scan (which must see every file,
+// including quarantined ones, so it can re-evaluate them); user-facing callers
+// go through ListPhotos/FirstPhoto, which additionally drop quarantined photos.
+func listImageNames(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -942,31 +979,42 @@ func (sc *Scanner) ListPhotos(albumFSPath string) ([]Photo, error) {
 		}
 	}
 	sort.Strings(names)
+	return names, nil
+}
 
+// ListPhotos returns the image files in an album directory, sorted by name,
+// EXCLUDING any photo quarantined as undecodable so broken files never surface
+// in galleries, viewers, search, or covers (they appear only in the admin
+// quarantine list).
+func (sc *Scanner) ListPhotos(albumFSPath string) ([]Photo, error) {
+	names, err := listImageNames(albumFSPath)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Photo, 0, len(names))
 	for _, n := range names {
-		full := filepath.Join(albumFSPath, n)
-		out = append(out, Photo{Name: n, Path: AbsToURLPath(full)})
+		token := AbsToURLPath(filepath.Join(albumFSPath, n))
+		if sc.store != nil && sc.store.IsQuarantined(token) {
+			continue
+		}
+		out = append(out, Photo{Name: n, Path: token})
 	}
 	return out, nil
 }
 
-// FirstPhoto returns the relative path of the first image in a directory
-// (alphabetical), used as a fallback cover. Empty string if none.
+// FirstPhoto returns the URL token of the first non-quarantined image in a
+// directory (alphabetical), used as a fallback cover. Empty string if none.
 func (sc *Scanner) FirstPhoto(dir string) string {
-	entries, err := os.ReadDir(dir)
+	names, err := listImageNames(dir)
 	if err != nil {
 		return ""
 	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() && IsImage(e.Name()) {
-			names = append(names, e.Name())
+	for _, n := range names {
+		token := AbsToURLPath(filepath.Join(dir, n))
+		if sc.store != nil && sc.store.IsQuarantined(token) {
+			continue
 		}
+		return token
 	}
-	if len(names) == 0 {
-		return ""
-	}
-	sort.Strings(names)
-	return AbsToURLPath(filepath.Join(dir, names[0]))
+	return ""
 }

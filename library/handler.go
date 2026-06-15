@@ -482,8 +482,8 @@ func (h *Handler) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
 		"thumbnailFilter":  thumbFilter,
 		// geocodeMode selects the reverse-geocoding backend: "off", "nearest"
 		// (light, default) or "accurate" (high RAM, slower).
-		"geocodeMode":      string(GetGeocodeMode()),
-		"rowLimit":         h.rowLimit(),
+		"geocodeMode": string(GetGeocodeMode()),
+		"rowLimit":    h.rowLimit(),
 		// scanReportLimit is how many scan timing reports are retained.
 		"scanReportLimit":    h.store.scanReportLimit(),
 		"maxScanReportLimit": maxScanReportLimit,
@@ -586,6 +586,50 @@ func (h *Handler) AdminListScanErrors(w http.ResponseWriter, r *http.Request) {
 // AdminClearScanErrors removes all recorded scan errors.
 func (h *Handler) AdminClearScanErrors(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.ClearScanErrors(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Admin: media quarantine ---
+
+// AdminListQuarantine returns all quarantined media (undecodable photos), most
+// recently seen first.
+func (h *Handler) AdminListQuarantine(w http.ResponseWriter, r *http.Request) {
+	items, err := h.store.ListQuarantine()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// AdminReleaseQuarantine removes a single photo from quarantine so the next scan
+// re-attempts its thumbnail (after the source file has been fixed/replaced).
+func (h *Handler) AdminReleaseQuarantine(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(in.Path) == "" {
+		writeErr(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if err := h.store.ReleaseQuarantine(in.Path); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"released": true, "path": in.Path})
+}
+
+// AdminClearQuarantine empties the quarantine so every previously broken photo
+// is re-attempted on the next scan.
+func (h *Handler) AdminClearQuarantine(w http.ResponseWriter, r *http.Request) {
+	if err := h.store.ClearQuarantine(); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -836,7 +880,8 @@ func (h *Handler) GetNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Fall back to the first photo as cover (and implicitly backdrop) when no
-	// cover has been explicitly set.
+	// cover has been explicitly set. ListPhotos already excludes quarantined
+	// (undecodable) photos, so the cover is never a broken file.
 	if node.CoverPhoto == "" && len(photos) > 0 {
 		node.CoverPhoto = photos[0].Path
 	}

@@ -147,6 +147,11 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /api/admin/errors", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListScanErrors)))
 	mux.Handle("DELETE /api/admin/errors", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminClearScanErrors)))
 
+	// --- Admin media quarantine (undecodable photos) ---
+	mux.Handle("GET /api/admin/quarantine", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListQuarantine)))
+	mux.Handle("POST /api/admin/quarantine/release", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminReleaseQuarantine)))
+	mux.Handle("DELETE /api/admin/quarantine", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminClearQuarantine)))
+
 	// --- Admin scan timing reports ---
 	mux.Handle("GET /api/admin/reports", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminListScanReports)))
 	mux.Handle("GET /api/admin/reports/{id}", d.Mw.RequireAdmin(http.HandlerFunc(d.Gallery.AdminGetScanReport)))

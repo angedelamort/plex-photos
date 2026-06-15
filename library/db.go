@@ -244,6 +244,22 @@ CREATE TABLE IF NOT EXISTS scan_reports (
   report       TEXT NOT NULL
 );
 
+-- Media that could not be decoded for thumbnailing even after a best-effort
+-- repair (e.g. truncated/corrupt JPEGs). Quarantined photos are skipped by
+-- future scans (so they stop re-erroring), hidden from non-admin galleries, and
+-- listed for admins who can release one to retry after fixing the source file.
+-- Keyed by the photo URL token (see AbsToURLPath), one row per broken file.
+CREATE TABLE IF NOT EXISTS media_quarantine (
+  photo_path   TEXT PRIMARY KEY,
+  library_id   TEXT,
+  library_name TEXT,
+  phase        TEXT NOT NULL,
+  reason       TEXT NOT NULL,
+  first_seen   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  last_seen    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_quarantine_lib ON media_quarantine(library_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_started ON jobs(started_at);
 CREATE INDEX IF NOT EXISTS idx_nodes_library ON nodes(library_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
