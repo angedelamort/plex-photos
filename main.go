@@ -55,13 +55,19 @@ func main() {
 	if f, err := store.GetSetting(library.SettingThumbFilter, ""); err == nil && f != "" {
 		thumbs.SetFilter(f)
 	}
+	// Select the reverse-geocoding mode (off / nearest / accurate) from the
+	// persisted setting BEFORE warming, so the right backend — and its very
+	// different memory profile — is chosen at startup.
+	if v, err := store.GetSetting(library.SettingGeocodeMode, string(library.DefaultGeocodeMode)); err == nil {
+		library.SetGeocodeMode(library.GeocodeMode(v))
+	}
 	galleryHandler := library.NewHandler(store, scanner, thumbs, artDir)
 	galleryHandler.SetVersion(version)
 
-	// Build the reverse-geocoding index in the background at startup. Parsing
-	// the embedded Natural Earth datasets is expensive, so doing it here keeps
-	// the first on-demand place lookup (the photo info panel) from blocking on
-	// it and leaving the UI stuck on "loading…".
+	// Build the active mode's reverse-geocoding index in the background at
+	// startup so the first on-demand place lookup (the photo info panel) doesn't
+	// block on the one-time build. The default "nearest" mode is light; the
+	// "accurate" mode is intentionally heavy (see GeocodeAccurate).
 	library.WarmGeocoder()
 
 	// Frame TV: manage configured TVs and run the per-TV photo swap loop.

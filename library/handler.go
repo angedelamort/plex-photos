@@ -480,6 +480,9 @@ func (h *Handler) AdminGetSettings(w http.ResponseWriter, r *http.Request) {
 		"thumbnailWorkers": thumbWorkers,
 		"maxWorkerThreads": maxThumbWorkers,
 		"thumbnailFilter":  thumbFilter,
+		// geocodeMode selects the reverse-geocoding backend: "off", "nearest"
+		// (light, default) or "accurate" (high RAM, slower).
+		"geocodeMode":      string(GetGeocodeMode()),
 		"rowLimit":         h.rowLimit(),
 		// scanReportLimit is how many scan timing reports are retained.
 		"scanReportLimit":    h.store.scanReportLimit(),
@@ -496,6 +499,7 @@ func (h *Handler) AdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		WorkerThreads         *int    `json:"workerThreads"`
 		ThumbnailWorkers      *int    `json:"thumbnailWorkers"`
 		ThumbnailFilter       *string `json:"thumbnailFilter"`
+		GeocodeMode           *string `json:"geocodeMode"`
 		RowLimit              *int    `json:"rowLimit"`
 		ScanReportLimit       *int    `json:"scanReportLimit"`
 	}
@@ -529,6 +533,16 @@ func (h *Handler) AdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+	}
+	if in.GeocodeMode != nil {
+		eff := SetGeocodeMode(GeocodeMode(*in.GeocodeMode))
+		if err := h.store.SetSetting(SettingGeocodeMode, string(eff)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// Pre-build the newly selected backend in the background so the first
+		// lookup after the switch doesn't stall.
+		WarmGeocoder()
 	}
 	if in.RowLimit != nil {
 		n := *in.RowLimit

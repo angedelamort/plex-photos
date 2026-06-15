@@ -2439,6 +2439,38 @@ async function buildThumbFilterPanel() {
   return panel;
 }
 
+// ── admin: reverse-geocoding mode ──
+// Trades place-label precision against memory/CPU. "accurate" is intentionally
+// heavy (high RAM, slow), which matters on small NAS hosts.
+async function buildGeocodeModePanel() {
+  let mode = "nearest";
+  try {
+    const s = await api("/api/admin/settings");
+    if (s.geocodeMode) mode = s.geocodeMode;
+  } catch (e) { /* fall back to defaults */ }
+
+  const panel = el("div", { class: "lib-row" });
+  panel.appendChild(el("div", {
+    html: `<div class="lib-name">${esc(t("admin.geocodeMode"))}</div><div class="lib-path">${esc(t("admin.geocodeModeHint"))}</div>`,
+  }));
+
+  const actions = el("div", { class: "lib-actions" });
+  const modeSelect = el("select", { class: "control sm" });
+  ["off", "nearest", "accurate"].forEach((val) => {
+    const opt = el("option", { text: t("admin.geocodeMode." + val) });
+    opt.value = val;
+    if (val === mode) opt.selected = true;
+    modeSelect.appendChild(opt);
+  });
+  modeSelect.addEventListener("change", (ev) => {
+    saveAdminSetting({ geocodeMode: ev.target.value });
+  });
+  actions.appendChild(modeSelect);
+
+  panel.appendChild(actions);
+  return panel;
+}
+
 // ── admin: row item limit ──
 // How many items load into each home/library/collection carousel row before
 // the user scrolls. Lower keeps very large folders snappy.
@@ -2558,6 +2590,7 @@ async function renderAdmin(main) {
   settingsGroup.appendChild(await buildAutoScanPanel());
   settingsGroup.appendChild(await buildScanThreadsPanel());
   settingsGroup.appendChild(await buildThumbFilterPanel());
+  settingsGroup.appendChild(await buildGeocodeModePanel());
   settingsGroup.appendChild(await buildRowLimitPanel());
   settingsGroup.appendChild(await buildScanReportLimitPanel());
   main.appendChild(settingsGroup);
