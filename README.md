@@ -7,6 +7,7 @@ Think "Plex, but for photos".
 - **Auth via Plex** — log in with your plex.tv account; access is validated against your Plex server.
 - **Folder-based** — point a library at a folder; collections and albums are detected by scanning the filesystem.
 - **Per-library access** — each user only sees the libraries they are whitelisted for.
+- **Playlists** — per-user, hand-curated ordered sets of photos that span albums and libraries, with covers and end-to-end slideshow playback.
 - **Read-only** — the app never modifies your photos.
 - **Auto-scan** — a filesystem watcher detects new folders/photos and rescans automatically; an optional periodic rescan (every N hours) can be set in Admin as a safety net.
 
@@ -174,6 +175,15 @@ configured, so complete first-run setup on your local network.
 
 ## Roadmap (V2)
 
+### Scan pipeline
+
+- Split metadata into its own labelled phase/progress bar in the UI
+  (`index → thumbnails → metadata`); today metadata is folded into the
+  "thumbnails" phase even though the work runs as its own per-photo step.
+- Surface the deep scan as an admin button, and retire the now-redundant
+  standalone "Regenerate thumbnails" / "Cleanup orphaned thumbnails" actions
+  (a deep scan already covers both).
+
 ### Search
 
 A search box to find photos across every library the user can access, querying
@@ -191,24 +201,14 @@ Sketch:
   text columns if simple `LIKE` proves too limited.
 - A search affordance in the header that opens a results grid reusing the
   existing photo tiles and viewer, plus an "open as slideshow" action.
+- Clickable tags as a faceted entry point: surface a photo's **person** and
+  **location** (geocoded place) tags — e.g. in the viewer's Details panel — as
+  links that run a pre-filled search for that person or place. Clicking a tag
+  opens the results grid for "all photos of this person" or "all photos taken
+  here," turning the indexed `photo_people` / `photo_meta` place data into
+  one-click navigation.
 - Naturally complements smart collections below (a saved search ≈ a rule-based
   collection).
-
-### Photo playlists
-
-A user-curated, ordered set of individual **photos** (as opposed to album-level
-favorites, which already exist). Unlike albums — which mirror folders on disk —
-a playlist is a virtual, cross-album/cross-library collection of photos.
-
-Sketch:
-
-- New tables, e.g. `playlists(id, plex_username, name, created_at)` and
-  `playlist_items(playlist_id, photo_path, position)` (ordered).
-- Endpoints to create/rename/delete playlists, add/remove/reorder items, and
-  list a playlist's photos.
-- A "playlists" section in the sidebar and a swimlane on Accueil; an "add to
-  playlist" action in the photo viewer.
-- Slideshow support so a playlist can be played end-to-end like an album.
 
 ### Smart collections
 

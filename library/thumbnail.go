@@ -2,6 +2,7 @@ package library
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,15 +38,22 @@ func resampleFilterFor(name string) imaging.ResampleFilter {
 	return imaging.Lanczos
 }
 
+// thumbLockStripes is the number of striped mutexes used to serialize
+// generation per output path. A fixed array keeps memory constant regardless of
+// library size; distinct paths that hash to the same stripe serialize against
+// each other only briefly (harmless for the 1–8 generation workers in use).
+const thumbLockStripes = 256
+
 // Thumbnailer generates and caches thumbnails on demand.
 type Thumbnailer struct {
 	cacheRoot string
 	width     int
 
 	mu         sync.Mutex
-	locks      map[string]*sync.Mutex
 	filterName string
 	filter     imaging.ResampleFilter
+
+	locks [thumbLockStripes]sync.Mutex
 }
 
 // NewThumbnailer creates a thumbnailer. cacheRoot is where generated thumbs are
@@ -55,7 +63,6 @@ func NewThumbnailer(cacheRoot string, width int) *Thumbnailer {
 	return &Thumbnailer{
 		cacheRoot:  cacheRoot,
 		width:      width,
-		locks:      map[string]*sync.Mutex{},
 		filterName: defaultThumbFilter,
 		filter:     imaging.Lanczos,
 	}
@@ -123,16 +130,13 @@ func (t *Thumbnailer) RemoveThumb(path string) error {
 	return nil
 }
 
-// pathLock serializes generation per output path to avoid duplicate work/races.
+// pathLock returns the striped mutex serializing generation for the given
+// output path. The path is hashed into a fixed set of stripes, so memory stays
+// constant no matter how many distinct thumbnails are generated.
 func (t *Thumbnailer) pathLock(key string) *sync.Mutex {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	l, ok := t.locks[key]
-	if !ok {
-		l = &sync.Mutex{}
-		t.locks[key] = l
-	}
-	return l
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return &t.locks[h.Sum32()%thumbLockStripes]
 }
 
 // ThumbPath returns the cached thumbnail path for a photo URL token, generating
@@ -170,17 +174,30 @@ func (t *Thumbnailer) ThumbPath(token string) (string, error) {
 }
 
 // CacheIndex is an in-memory snapshot of the thumbnail cache directory mapping
-// absolute thumbnail paths to their modification time. It lets the scan phase
-// decide whether a thumbnail already exists with a single map lookup instead of
-// an os.Stat syscall per photo, which is the dominant cost when most thumbnails
-// already exist (e.g. a re-scan of a large, already-warmed library).
+// absolute thumbnail paths to their modification time (UnixNano). It lets the
+// scan phase decide whether a thumbnail already exists with a single map lookup
+// instead of an os.Stat syscall per photo, which is the dominant cost when most
+// thumbnails already exist (e.g. a re-scan of a large, already-warmed library).
+//
+// The modtime is only populated when the index is built with modtimes (deep
+// scan); a quick-scan index records presence with a 0 value, since membership
+// is all it needs.
 type CacheIndex map[string]int64
 
 // BuildCacheIndex walks the cache root once and records every existing
-// (non-empty) thumbnail file with its modtime. A single sequential tree walk is
-// far cheaper than ~N random stat calls on a NAS/spinning disk. If the cache
-// root does not exist yet, an empty index is returned.
-func (t *Thumbnailer) BuildCacheIndex() (CacheIndex, error) {
+// thumbnail file. If the cache root does not exist yet, an empty index is
+// returned.
+//
+// When needModTimes is true (deep scan) each entry is stat'd so its modtime is
+// recorded, which the deep generation path compares against the source file to
+// detect in-place edits. When false (quick scan) the walk is a pure directory
+// enumeration with NO per-file stat: only the thumbnail's presence is recorded
+// (modtime 0). A quick scan only tests membership, so skipping d.Info() turns
+// the index build from ~N stats into a handful of directory listings — the key
+// to a fast warm re-scan on a NAS. Empty/partial thumbnails are not a concern
+// because generate() writes to a temp file and atomically renames into place,
+// so a .thumb.jpg is never zero-length.
+func (t *Thumbnailer) BuildCacheIndex(needModTimes bool) (CacheIndex, error) {
 	idx := CacheIndex{}
 	err := filepath.WalkDir(t.cacheRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -190,6 +207,10 @@ func (t *Thumbnailer) BuildCacheIndex() (CacheIndex, error) {
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".thumb.jpg") {
+			return nil
+		}
+		if !needModTimes {
+			idx[path] = 0
 			return nil
 		}
 		info, err := d.Info()
@@ -226,6 +247,44 @@ func (t *Thumbnailer) EnsureIndexed(token string, idx CacheIndex) (bool, error) 
 	lock.Lock()
 	defer lock.Unlock()
 	if thumbFresh(dstFull, srcInfo) {
+		return false, nil
+	}
+	if err := t.generate(srcFull, dstFull); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// EnsurePresent is the quick-scan counterpart to EnsureIndexed: it generates a
+// thumbnail only when one does not already exist, and performs NO stat of the
+// source file. An existing cached thumbnail is trusted regardless of the
+// source's mtime, so detecting a photo edited in place (same filename, new
+// content) is deliberately left to a deep scan. The dominant cost on a NAS is
+// the per-file stat syscall, so skipping it makes a warm re-scan effectively
+// free for already-thumbnailed photos. New photos are generated, which reads
+// the source anyway, making the elided stat negligible there.
+func (t *Thumbnailer) EnsurePresent(token string, idx CacheIndex) (bool, error) {
+	srcFull := URLPathToAbs(token)
+	if !IsImage(srcFull) {
+		return false, fmt.Errorf("not an image: %s", token)
+	}
+	dstFull := t.cachePath(srcFull)
+
+	// The cache snapshot is the source of truth for "do we already have a
+	// thumbnail for this path?" — a single in-memory lookup, no syscall.
+	if idx != nil {
+		if _, ok := idx[dstFull]; ok {
+			return false, nil
+		}
+	}
+
+	lock := t.pathLock(dstFull)
+	lock.Lock()
+	defer lock.Unlock()
+	// Re-check on disk under the lock. With no index this is the only existence
+	// check; with an index it guards against a racing worker. Either way it
+	// stats the destination thumbnail, never the (NAS-resident) source.
+	if fi, err := os.Stat(dstFull); err == nil && fi.Size() > 0 {
 		return false, nil
 	}
 	if err := t.generate(srcFull, dstFull); err != nil {

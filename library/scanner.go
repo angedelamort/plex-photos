@@ -27,6 +27,28 @@ const defaultThumbWorkers = 1
 // maxThumbWorkers caps the configurable concurrency to avoid pegging every core.
 const maxThumbWorkers = 8
 
+// ScanMode selects how thorough a scan's post-index (thumbnail + metadata)
+// phase is.
+//
+// ScanQuick is the default cheap pass used by auto-scan and manual scans. It
+// only does work it can detect without per-file stat syscalls: it generates
+// thumbnails for photos that have none, and indexes metadata for photos with no
+// row yet. Already-known photos are skipped with a single in-memory/DB lookup,
+// so a warm re-scan of a large library on a NAS performs no per-photo disk I/O.
+// The trade-off is that a photo edited in place (same filename, new content) is
+// NOT noticed — its thumbnail and metadata stay as they were.
+//
+// ScanDeep is the occasional, thorough pass. It stats every source file and
+// compares mtime/size against the cached thumbnail and the indexed metadata, so
+// in-place edits are detected and refreshed. It also removes orphaned
+// thumbnails, making a deep scan a full reconciliation of the library.
+type ScanMode int
+
+const (
+	ScanQuick ScanMode = iota
+	ScanDeep
+)
+
 // Scanner walks library roots to populate collections and albums.
 type Scanner struct {
 	db     *sql.DB
@@ -40,19 +62,23 @@ type Scanner struct {
 }
 
 // ScanProgress is a snapshot of an in-flight (or finished) library scan.
-// A scan runs in two phases: "index" (walk + DB upsert) then "thumbnails"
-// (pre-generate thumbnails for every photo). The Thumb* fields describe the
-// second phase so the UI can render a separate progress bar.
+// A scan runs as a sequence of phases: "index" (walk + DB upsert), then
+// "thumbnails" (generate missing thumbnails), then "metadata" (index EXIF /
+// sidecar / geocode). A deep scan adds a final "cleanup" phase. Each phase has
+// its own total/done counters so the UI can render a distinct progress bar.
 type ScanProgress struct {
 	LibraryID  string `json:"libraryId"`
 	Running    bool   `json:"running"`
 	Done       bool   `json:"done"`
-	Phase      string `json:"phase"` // "index" | "thumbnails" | ""
+	Phase      string `json:"phase"` // "index" | "thumbnails" | "metadata" | "cleanup" | ""
 	Total      int    `json:"total"`
 	Current    int    `json:"current"`
 	CurrentDir string `json:"currentDir"`
 	ThumbTotal int    `json:"thumbTotal"`
 	ThumbDone  int    `json:"thumbDone"`
+	// Metadata phase: per-photo EXIF/sidecar/geocode indexing.
+	MetaTotal int `json:"metaTotal"`
+	MetaDone  int `json:"metaDone"`
 	// Cleanup phase: removal of orphaned cached thumbnails (no source photo).
 	CleanupTotal int    `json:"cleanupTotal"`
 	CleanupDone  int    `json:"cleanupDone"`
@@ -133,20 +159,28 @@ func (sc *Scanner) updateProgress(libraryID string, fn func(*ScanProgress)) {
 	fn(p)
 }
 
-// Scan walks a library's root folder two levels deep, syncing collections
-// (level 1) and albums (level 2) into the database. Stale entries are removed.
-// It also reports progress so callers can render a live banner.
+// Scan walks a library's root folder, syncing collections and albums into the
+// database, then runs a quick (presence-only) thumbnail + metadata pass. Stale
+// entries are removed. It also reports progress so callers can render a live
+// banner. This is the everyday scan used by auto-scan.
 func (sc *Scanner) Scan(lib *Library, source string) error {
-	return sc.scanWithJob(lib, source, nil)
+	return sc.scanWithJob(lib, source, nil, ScanQuick)
 }
 
-// ScanJob runs a full scan while reporting progress to a JobManager job so the
+// ScanJob runs a quick scan while reporting progress to a JobManager job so the
 // admin Jobs page can show live progress and history.
 func (sc *Scanner) ScanJob(lib *Library, source string, jp *JobProgress) error {
-	return sc.scanWithJob(lib, source, jp)
+	return sc.scanWithJob(lib, source, jp, ScanQuick)
 }
 
-func (sc *Scanner) scanWithJob(lib *Library, source string, jp *JobProgress) error {
+// DeepScanJob runs a thorough scan (see ScanDeep): it re-checks every photo's
+// thumbnail and metadata against the source file's mtime/size and removes
+// orphaned thumbnails, reporting progress to the job.
+func (sc *Scanner) DeepScanJob(lib *Library, source string, jp *JobProgress) error {
+	return sc.scanWithJob(lib, source, jp, ScanDeep)
+}
+
+func (sc *Scanner) scanWithJob(lib *Library, source string, jp *JobProgress, mode ScanMode) error {
 	sc.setProgress(ScanProgress{LibraryID: lib.ID, Running: true, Phase: "index"})
 	if jp != nil {
 		jp.SetPhase("index", 0)
@@ -154,10 +188,11 @@ func (sc *Scanner) scanWithJob(lib *Library, source string, jp *JobProgress) err
 
 	err := sc.scan(lib)
 
-	// Phase 2: pre-generate thumbnails for the whole library so a finished scan
-	// means thumbnails are ready (rather than lazily generated on first view).
+	// Phase 2: (re)generate thumbnails and index metadata so a finished scan
+	// means the gallery is ready (rather than lazily generated on first view).
+	// A deep scan additionally reconciles the cache by removing orphans.
 	if err == nil && sc.thumbs != nil {
-		sc.generateThumbnails(lib, jp)
+		sc.thumbnailPhase(lib, jp, mode)
 	}
 
 	sc.updateProgress(lib.ID, func(p *ScanProgress) {
@@ -246,21 +281,43 @@ func (sc *Scanner) scan(lib *Library) error {
 	return tx.Commit()
 }
 
-// generateThumbnails is scan phase 2: it pre-generates a thumbnail for every
-// photo in the library so the gallery renders instantly after a scan. Work is
-// spread across a small worker pool; failures on individual images are logged
-// but do not abort the phase. Progress is reported via ThumbTotal/ThumbDone.
-//
-// Generation only ADDS missing thumbnails; it never deletes. Removing orphaned
-// thumbnails is a deliberately separate operation (CleanupThumbnails) so a scan
-// is never destructive.
-func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
+// thumbnailPhase runs the post-index work as distinct, separately-reported
+// phases: it lists every photo once, snapshots the thumbnail cache once, then
+// generates thumbnails ("thumbnails"), indexes metadata ("metadata"), and — for
+// a deep scan — removes orphaned thumbnails ("cleanup"). Sharing the photo list
+// and cache snapshot across all steps avoids re-walking the tree and
+// re-statting the cache per step.
+func (sc *Scanner) thumbnailPhase(lib *Library, jp *JobProgress, mode ScanMode) {
+	rels := sc.collectPhotoRels(lib)
+
+	// Snapshot the cache directory once so each worker can check for an existing
+	// thumbnail with a map lookup instead of an os.Stat per photo, and so the
+	// deep-scan cleanup can diff against the same snapshot. A quick scan builds
+	// the index without statting each thumbnail (presence only), so a warm
+	// re-scan does zero per-file syscalls; a deep scan records modtimes so it
+	// can detect sources edited in place.
+	cacheIdx, err := sc.thumbs.BuildCacheIndex(mode == ScanDeep)
+	if err != nil {
+		log.Printf("thumbnail phase: build cache index for %s: %v", lib.ID, err)
+		cacheIdx = nil
+	}
+
+	sc.generateThumbnails(lib, rels, cacheIdx, jp, mode)
+	sc.indexMetadata(lib, rels, jp, mode)
+
+	if mode == ScanDeep {
+		sc.cleanupOrphanThumbs(lib, rels, cacheIdx, jp)
+	}
+}
+
+// collectPhotoRels lists every photo (as a URL token) under the library root,
+// walking each album directory once.
+func (sc *Scanner) collectPhotoRels(lib *Library) []string {
 	albumDirs, err := findAlbumDirs(lib.RootPath)
 	if err != nil {
 		log.Printf("thumbnail phase: list albums for %s: %v", lib.ID, err)
-		return
+		return nil
 	}
-
 	var rels []string
 	for _, dir := range albumDirs {
 		photos, err := sc.ListPhotos(dir)
@@ -271,16 +328,23 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 			rels = append(rels, p.Path)
 		}
 	}
+	return rels
+}
 
+// runPhotoPhase spreads per-photo work across a small worker pool, reporting
+// progress both to the in-memory ScanProgress (via setTotal/bump, which run
+// under the progress lock) and to the optional JobProgress. Failures on
+// individual photos are the work function's concern; this helper only drives
+// the pool and progress.
+func (sc *Scanner) runPhotoPhase(lib *Library, phase string, rels []string, jp *JobProgress, setTotal func(*ScanProgress, int), bump func(*ScanProgress), work func(rel string)) {
 	total := len(rels)
 	sc.updateProgress(lib.ID, func(p *ScanProgress) {
-		p.Phase = "thumbnails"
-		p.ThumbTotal = total
-		p.ThumbDone = 0
+		p.Phase = phase
+		setTotal(p, total)
 		p.CurrentDir = ""
 	})
 	if jp != nil {
-		jp.SetPhase("thumbnails", total)
+		jp.SetPhase(phase, total)
 	}
 	if total == 0 {
 		return
@@ -289,15 +353,6 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 	workers := sc.ThumbWorkers()
 	if workers < 1 {
 		workers = 1
-	}
-
-	// Snapshot the cache directory once so each worker can check for an existing
-	// thumbnail with a map lookup instead of an os.Stat per photo. This is the
-	// dominant speedup when re-scanning an already-warmed library.
-	cacheIdx, err := sc.thumbs.BuildCacheIndex()
-	if err != nil {
-		log.Printf("thumbnail phase: build cache index for %s: %v", lib.ID, err)
-		cacheIdx = nil
 	}
 
 	var doneMu sync.Mutex
@@ -309,11 +364,8 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 		go func() {
 			defer wg.Done()
 			for rel := range jobs {
-				if _, err := sc.thumbs.EnsureIndexed(rel, cacheIdx); err != nil {
-					log.Printf("thumbnail %q: %v", rel, err)
-				}
-				sc.indexPhotoMeta(lib.ID, rel)
-				sc.updateProgress(lib.ID, func(p *ScanProgress) { p.ThumbDone++ })
+				work(rel)
+				sc.updateProgress(lib.ID, bump)
 				if jp != nil {
 					doneMu.Lock()
 					done++
@@ -331,12 +383,61 @@ func (sc *Scanner) generateThumbnails(lib *Library, jp *JobProgress) {
 	wg.Wait()
 }
 
+// generateThumbnails generates any missing thumbnails for the given photos
+// (phase "thumbnails"). In ScanQuick mode an existing thumbnail is trusted via a
+// cache-index lookup with no source stat; only photos with no thumbnail do disk
+// I/O. In ScanDeep mode every source file is stat'd so a thumbnail stale
+// relative to a source edited in place is refreshed.
+//
+// It only ADDS or REFRESHES thumbnails; it never deletes. Removing orphaned
+// thumbnails is the deep scan's separate cleanup step, so a quick scan is never
+// destructive.
+func (sc *Scanner) generateThumbnails(lib *Library, rels []string, cacheIdx CacheIndex, jp *JobProgress, mode ScanMode) {
+	deep := mode == ScanDeep
+	sc.runPhotoPhase(lib, "thumbnails", rels, jp,
+		func(p *ScanProgress, total int) { p.ThumbTotal = total; p.ThumbDone = 0 },
+		func(p *ScanProgress) { p.ThumbDone++ },
+		func(rel string) {
+			var genErr error
+			if deep {
+				_, genErr = sc.thumbs.EnsureIndexed(rel, cacheIdx)
+			} else {
+				_, genErr = sc.thumbs.EnsurePresent(rel, cacheIdx)
+			}
+			if genErr != nil {
+				log.Printf("thumbnail %q: %v", rel, genErr)
+			}
+		})
+}
+
+// indexMetadata indexes per-photo metadata (EXIF + sidecar + geocode) for the
+// given photos (phase "metadata"), with the same quick/deep semantics as
+// indexPhotoMeta: quick skips already-indexed photos via a DB lookup with no
+// source stat; deep re-checks each source's mtime/size.
+func (sc *Scanner) indexMetadata(lib *Library, rels []string, jp *JobProgress, mode ScanMode) {
+	deep := mode == ScanDeep
+	sc.runPhotoPhase(lib, "metadata", rels, jp,
+		func(p *ScanProgress, total int) { p.MetaTotal = total; p.MetaDone = 0 },
+		func(p *ScanProgress) { p.MetaDone++ },
+		func(rel string) { sc.indexPhotoMeta(lib.ID, rel, deep) })
+}
+
 // indexPhotoMeta extracts and stores per-photo metadata (EXIF + Google sidecar
-// JSON + reverse geocode) for the photo at the given URL token. It is
-// incremental: a photo whose file mtime and size are unchanged since the last
-// index is skipped without decoding it. Failures are logged but never abort the
-// scan, mirroring thumbnail generation.
-func (sc *Scanner) indexPhotoMeta(libraryID, rel string) {
+// JSON + reverse geocode) for the photo at the given URL token. Failures are
+// logged but never abort the scan, mirroring thumbnail generation.
+//
+// In quick mode (deep=false) a photo already indexed at the current version is
+// skipped with a single DB lookup and NO source stat, so a warm re-scan touches
+// no files; only newly seen photos are read and indexed. In deep mode the
+// source is stat'd and its mtime/size compared against the stored row, so a
+// photo edited in place is re-indexed.
+func (sc *Scanner) indexPhotoMeta(libraryID, rel string, deep bool) {
+	if !deep {
+		if _, _, pv, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok && pv == photoMetaVersion {
+			return // already indexed at the current version; trust it
+		}
+	}
+
 	abs := URLPathToAbs(rel)
 	fi, err := os.Stat(abs)
 	if err != nil {
@@ -344,9 +445,11 @@ func (sc *Scanner) indexPhotoMeta(libraryID, rel string) {
 		return
 	}
 	mtime, size := fi.ModTime().Unix(), fi.Size()
-	if pm, ps, pv, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok &&
-		pm == mtime && ps == size && pv == photoMetaVersion {
-		return // unchanged since last index, and indexed at the current version
+	if deep {
+		if pm, ps, pv, ok, err := sc.store.PhotoMetaStat(rel); err == nil && ok &&
+			pm == mtime && ps == size && pv == photoMetaVersion {
+			return // unchanged since last index, and indexed at the current version
+		}
 	}
 
 	m := extractPhotoMeta(abs)
@@ -359,46 +462,15 @@ func (sc *Scanner) indexPhotoMeta(libraryID, rel string) {
 	}
 }
 
-// CleanupThumbnails removes cached thumbnails that no longer correspond to a
-// source photo in the library, reporting progress to the given job. It is a
-// standalone, read-then-delete operation kept entirely separate from scanning
-// and generation: scanning only adds missing thumbnails, while this is the only
-// path that deletes. Safe to run independently from the admin UI.
-func (sc *Scanner) CleanupThumbnails(lib *Library, jp *JobProgress) error {
-	if sc.thumbs == nil {
-		return fmt.Errorf("thumbnailer not configured")
-	}
-
-	albumDirs, err := findAlbumDirs(lib.RootPath)
-	if err != nil {
-		return fmt.Errorf("list albums: %w", err)
-	}
-	var rels []string
-	for _, dir := range albumDirs {
-		photos, err := sc.ListPhotos(dir)
-		if err != nil {
-			continue
-		}
-		for _, p := range photos {
-			rels = append(rels, p.Path)
-		}
-	}
-
-	cacheIdx, err := sc.thumbs.BuildCacheIndex()
-	if err != nil {
-		return fmt.Errorf("build cache index: %w", err)
-	}
-
-	sc.cleanupOrphanThumbs(lib, rels, cacheIdx, jp)
-	return nil
-}
-
 // cleanupOrphanThumbs deletes cached thumbnails that no longer correspond to a
 // source photo. It diffs the pre-built cache index against the set of thumbnail
 // paths expected from the current photo list (rels); anything in the cache but
 // not expected is an orphan (its source photo was deleted/moved) and is
 // removed. Failures are logged but do not abort the pass. If the cache index
 // was unavailable, cleanup is skipped (we cannot safely enumerate orphans).
+//
+// This is the deep scan's final reconciliation step and the only path that
+// deletes cached thumbnails; the quick scan and thumbnail generation never do.
 func (sc *Scanner) cleanupOrphanThumbs(lib *Library, rels []string, cacheIdx CacheIndex, jp *JobProgress) {
 	if cacheIdx == nil {
 		return
@@ -467,16 +539,6 @@ func (sc *Scanner) cleanupOrphanThumbs(lib *Library, rels []string, cacheIdx Cac
 			jp.SetProgress(i+1, total)
 		}
 	}
-}
-
-// RegenerateThumbnails forces regeneration of every thumbnail in a library
-// without re-indexing the folder tree, reporting progress to the given job.
-func (sc *Scanner) RegenerateThumbnails(lib *Library, jp *JobProgress) error {
-	if sc.thumbs == nil {
-		return fmt.Errorf("thumbnailer not configured")
-	}
-	sc.generateThumbnails(lib, jp)
-	return nil
 }
 
 // allSubtreeDirs returns every (non-hidden) directory at or under root,

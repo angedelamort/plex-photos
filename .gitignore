@@ -5,6 +5,7 @@
 /dist/
 plex-photos
 plex-photos.exe
+testtv.exe
 
 # Logs
 *.log

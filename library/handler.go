@@ -291,7 +291,9 @@ func (h *Handler) AdminDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// AdminScanLibrary forces a filesystem rescan.
+// AdminScanLibrary forces a filesystem rescan. A quick (presence-only) scan is
+// the default; pass ?deep=1 (or deep=true) for a thorough scan that re-checks
+// every photo against its source mtime/size and removes orphaned thumbnails.
 func (h *Handler) AdminScanLibrary(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	lib, err := h.store.GetLibrary(id)
@@ -303,11 +305,25 @@ func (h *Handler) AdminScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	deepParam := r.URL.Query().Get("deep")
+	deep := deepParam == "1" || strings.EqualFold(deepParam, "true")
+	source := "manual"
+	if deep {
+		source = "manual (deep)"
+	}
+
 	// Run the scan as a tracked background job so the client can poll progress
 	// and show a Plex-like scanning banner, and it appears on the Jobs page.
 	if h.jobs != nil {
 		h.jobs.Enqueue(JobTypeScan, lib.Name, func(p *JobProgress) error {
-			if err := h.scanner.ScanJob(lib, "manual", p); err != nil {
+			var err error
+			if deep {
+				err = h.scanner.DeepScanJob(lib, source, p)
+			} else {
+				err = h.scanner.ScanJob(lib, source, p)
+			}
+			if err != nil {
 				log.Printf("scan library %s failed: %v", lib.ID, err)
 				return err
 			}
@@ -315,12 +331,12 @@ func (h *Handler) AdminScanLibrary(w http.ResponseWriter, r *http.Request) {
 		})
 	} else {
 		go func() {
-			if err := h.scanner.Scan(lib, "manual"); err != nil {
+			if err := h.scanner.Scan(lib, source); err != nil {
 				log.Printf("scan library %s failed: %v", lib.ID, err)
 			}
 		}()
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "libraryId": id})
+	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "libraryId": id, "deep": deep})
 }
 
 // AdminListJobs returns the recorded background jobs (active + recent history).
@@ -335,91 +351,6 @@ func (h *Handler) AdminListJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
-}
-
-// AdminRegenerateThumbnails enqueues thumbnail regeneration jobs. With a
-// {id} path value it targets one library; otherwise it regenerates every
-// library's thumbnails (one job per library, run serially).
-func (h *Handler) AdminRegenerateThumbnails(w http.ResponseWriter, r *http.Request) {
-	if h.jobs == nil {
-		writeErr(w, http.StatusServiceUnavailable, "job manager unavailable")
-		return
-	}
-	id := r.PathValue("id")
-	var libs []*Library
-	if id != "" {
-		lib, err := h.store.GetLibrary(id)
-		if errors.Is(err, ErrNotFound) {
-			writeErr(w, http.StatusNotFound, "library not found")
-			return
-		}
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		libs = []*Library{lib}
-	} else {
-		all, err := h.store.ListLibraries()
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		libs = all
-	}
-	for _, lib := range libs {
-		lib := lib
-		h.jobs.Enqueue(JobTypeThumbnail, lib.Name, func(p *JobProgress) error {
-			if err := h.scanner.RegenerateThumbnails(lib, p); err != nil {
-				log.Printf("regenerate thumbnails %s failed: %v", lib.ID, err)
-				return err
-			}
-			return nil
-		})
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "count": len(libs)})
-}
-
-// AdminCleanupThumbnails enqueues orphaned-thumbnail cleanup jobs. With a {id}
-// path value it targets one library; otherwise it cleans every library (one job
-// per library, run serially). Cleanup is the only path that deletes cached
-// thumbnails; scanning and regeneration never do.
-func (h *Handler) AdminCleanupThumbnails(w http.ResponseWriter, r *http.Request) {
-	if h.jobs == nil {
-		writeErr(w, http.StatusServiceUnavailable, "job manager unavailable")
-		return
-	}
-	id := r.PathValue("id")
-	var libs []*Library
-	if id != "" {
-		lib, err := h.store.GetLibrary(id)
-		if errors.Is(err, ErrNotFound) {
-			writeErr(w, http.StatusNotFound, "library not found")
-			return
-		}
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		libs = []*Library{lib}
-	} else {
-		all, err := h.store.ListLibraries()
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		libs = all
-	}
-	for _, lib := range libs {
-		lib := lib
-		h.jobs.Enqueue(JobTypeCleanup, lib.Name, func(p *JobProgress) error {
-			if err := h.scanner.CleanupThumbnails(lib, p); err != nil {
-				log.Printf("cleanup thumbnails %s failed: %v", lib.ID, err)
-				return err
-			}
-			return nil
-		})
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "count": len(libs)})
 }
 
 // AdminScanProgress reports the live progress of a library scan.

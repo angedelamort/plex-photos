@@ -2486,8 +2486,7 @@ async function renderAdmin(main) {
       const actions = el("div", { class: "lib-actions" });
       actions.appendChild(el("span", { class: "pill", text: t("meta.collections", { n: lib.collectionCount }) }));
       actions.appendChild(el("button", { class: "btn sm", html: `${icon("refresh")} ${esc(t("admin.scan"))}`, onclick: (ev) => scanLibrary(lib.id, ev.currentTarget) }));
-      actions.appendChild(el("button", { class: "btn sm", title: t("jobs.regenerate"), html: `${icon("refresh")} ${esc(t("jobs.regenerateShort"))}`, onclick: (ev) => regenerateThumbnails(lib.id, ev.currentTarget) }));
-      actions.appendChild(el("button", { class: "btn sm", title: t("jobs.cleanup"), html: `${icon("trash")} ${esc(t("jobs.cleanupShort"))}`, onclick: (ev) => cleanupThumbnails(lib.id, ev.currentTarget) }));
+      actions.appendChild(el("button", { class: "btn sm", title: t("admin.deepScanHint"), html: `${icon("refresh")} ${esc(t("admin.deepScan"))}`, onclick: (ev) => scanLibrary(lib.id, ev.currentTarget, true) }));
       actions.appendChild(el("button", { class: "btn sm", html: icon("edit"), onclick: () => openLibModal(lib) }));
       actions.appendChild(el("button", { class: "btn sm danger", html: icon("trash"), onclick: () => deleteLibrary(lib) }));
       row.appendChild(actions);
@@ -2612,16 +2611,6 @@ async function renderJobs(main) {
 
   const header = el("div", { class: "section-header" });
   header.appendChild(el("div", { html: `<div class="section-title">${esc(t("jobs.title"))}</div><div class="section-sub">${esc(t("jobs.subtitle"))}</div>` }));
-  header.appendChild(el("button", {
-    class: "btn accent",
-    html: `${icon("refresh")} ${esc(t("jobs.regenerateAll"))}`,
-    onclick: (ev) => regenerateThumbnails(null, ev.currentTarget),
-  }));
-  header.appendChild(el("button", {
-    class: "btn",
-    html: `${icon("trash")} ${esc(t("jobs.cleanupAll"))}`,
-    onclick: (ev) => cleanupThumbnails(null, ev.currentTarget),
-  }));
   main.appendChild(header);
 
   const list = el("div", { id: "jobs-list" });
@@ -2707,37 +2696,6 @@ function buildJobRow(j) {
     el("span", { class: "section-sub", text: when }),
   ]));
   return row;
-}
-
-async function regenerateThumbnails(libId, btn) {
-  const url = libId
-    ? `/api/admin/libraries/${libId}/regenerate-thumbnails`
-    : "/api/admin/jobs/regenerate-thumbnails";
-  if (btn) btn.disabled = true;
-  try {
-    await api(url, { method: "POST" });
-    await navigate({ view: "jobs" });
-  } catch (e) {
-    alert(t("alert.error", { msg: e.message }));
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function cleanupThumbnails(libId, btn) {
-  if (!confirm(t("jobs.cleanupConfirm"))) return;
-  const url = libId
-    ? `/api/admin/libraries/${libId}/cleanup-thumbnails`
-    : "/api/admin/jobs/cleanup-thumbnails";
-  if (btn) btn.disabled = true;
-  try {
-    await api(url, { method: "POST" });
-    await navigate({ view: "jobs" });
-  } catch (e) {
-    alert(t("alert.error", { msg: e.message }));
-  } finally {
-    if (btn) btn.disabled = false;
-  }
 }
 
 let editingUsername = null;
@@ -2938,12 +2896,15 @@ function renderSlideshowSettings(main) {
   main.appendChild(group);
 }
 
-async function scanLibrary(id, btn) {
+async function scanLibrary(id, btn, deep) {
   const original = btn.innerHTML;
   btn.innerHTML = `${icon("refresh")} …`;
   btn.disabled = true;
   try {
-    await api(`/api/admin/libraries/${id}/scan`, { method: "POST" });
+    const url = deep
+      ? `/api/admin/libraries/${id}/scan?deep=1`
+      : `/api/admin/libraries/${id}/scan`;
+    await api(url, { method: "POST" });
     showScanBanner();
     await pollScanProgress(id);
     hideScanBanner();
@@ -2997,10 +2958,28 @@ function updateScanBanner(p) {
   const fill = bar.querySelector(".scan-banner-fill");
 
   if (p.phase === "thumbnails") {
-    // Phase 2: pre-generating thumbnails for the whole library.
+    // Phase 2: generating missing thumbnails for the whole library.
     title.textContent = t("scan.thumbnails");
     sub.textContent = t("scan.thumbs", { cur: p.thumbDone || 0, total: p.thumbTotal || 0 });
     const pct = p.thumbTotal ? Math.round((p.thumbDone / p.thumbTotal) * 100) : 100;
+    fill.style.width = pct + "%";
+    return;
+  }
+
+  if (p.phase === "metadata") {
+    // Phase 3: indexing per-photo metadata (EXIF / sidecar / geocode).
+    title.textContent = t("scan.metadata");
+    sub.textContent = t("scan.thumbs", { cur: p.metaDone || 0, total: p.metaTotal || 0 });
+    const pct = p.metaTotal ? Math.round((p.metaDone / p.metaTotal) * 100) : 100;
+    fill.style.width = pct + "%";
+    return;
+  }
+
+  if (p.phase === "cleanup") {
+    // Deep scan only: removing orphaned thumbnails.
+    title.textContent = t("scan.cleanup");
+    sub.textContent = t("scan.thumbs", { cur: p.cleanupDone || 0, total: p.cleanupTotal || 0 });
+    const pct = p.cleanupTotal ? Math.round((p.cleanupDone / p.cleanupTotal) * 100) : 100;
     fill.style.width = pct + "%";
     return;
   }
