@@ -1,17 +1,60 @@
 # plex-photos
 
-A lightweight self-hosted photo gallery, authenticated via Plex SSO, organized
-into libraries / collections / albums mapped onto your existing folder structure.
-Think "Plex, but for photos".
+A fast, lightweight, self-hosted photo gallery for your own folders — think
+**"Plex, but for photos."** It points at the directory tree you already have,
+authenticates against your Plex account, and gives you a Plex-style home page
+with swimlanes, posters, favorites, and slideshows — without ever touching or
+reorganizing a single file on disk.
 
-- **Auth via Plex** — log in with your plex.tv account; access is validated against your Plex server.
-- **Folder-based** — point a library at a folder; collections and albums are detected by scanning the filesystem.
-- **Per-library access** — each user only sees the libraries they are whitelisted for.
-- **Playlists** — per-user, hand-curated ordered sets of photos that span albums and libraries, with covers and end-to-end slideshow playback.
-- **Read-only** — the app never modifies your photos.
-- **Auto-scan** — a filesystem watcher detects new folders/photos and rescans automatically; an optional periodic rescan (every N hours) can be set in Admin as a safety net.
+## Why I built this
 
-See [plex-photos-architecture.md](plex-photos-architecture.md) for the full design.
+I have ~300,000 photos sitting in a folder tree on a Synology NAS, carefully
+organized over the years. I wanted to actually *browse* them — nicely, quickly,
+from any device — without uploading them to a cloud, importing them into a
+database-driven app, or letting some tool rearrange my carefully named folders.
+
+Nothing I tried fit, so I built this with a few firm goals:
+
+- **Made for myself first.** It started as a way to enjoy my own library on my
+  Synology NAS, and it stays opinionated around that real-world use.
+- **Fast and light.** A small memory footprint and snappy navigation even at
+  scale: it comfortably handles **hundreds of thousands of photos** (~300k in my
+  own library) and everything still loads instantly.
+- **Your folders, untouched.** Your directory tree *is* the catalog. The app is
+  strictly **read-only** and never moves, renames, or modifies your files.
+- **My own Frame TV "art store."** I have a Samsung Frame TV and didn't want to
+  pay for the art subscription, so plex-photos doubles as a server for it: point
+  it at a playlist and it drives an endless slideshow of *my* photos — no
+  subscription, no per-image limit.
+- **A real test of agent-assisted coding.** This project was also an experiment
+  in how far AI-driven development can go on a non-trivial, real application.
+
+## Features
+
+- **Plex-style home page** — random swimlanes per library, plus **favorites** and
+  **recently viewed** rows, so there's always something to rediscover.
+- **Folders are albums, recursively** — every folder is an album, and an album
+  can contain sub-albums to any depth, exactly mirroring your directory tree.
+  Folders with photos render as albums; folders of folders render as collections.
+- **Auth via Plex** — log in with your plex.tv account; access is validated
+  against your own Plex server. A **mock mode** is available for local dev.
+- **Per-library access** — each user only sees the libraries they're whitelisted
+  for.
+- **Playlists & slideshows** — per-user, hand-curated ordered sets of photos that
+  span albums and libraries, with covers and end-to-end slideshow playback.
+- **Rich metadata** — EXIF capture date, dimensions, GPS with geocoded
+  city/country, and person tags are indexed at scan time and shown in the viewer.
+- **Editable, Plex-like details** — give any album/collection a custom poster,
+  background, sort title, summary, and more — stored separately so they survive
+  rescans.
+- **Auto-scan** — a filesystem watcher detects new folders/photos and rescans
+  automatically; an optional periodic rescan (every N hours) is available in
+  Admin as a safety net.
+- **Samsung Frame TV** — cast a playlist to a Samsung Frame TV's art mode and let
+  it cycle through your photos.
+- **Localized UI** — available in English and French.
+
+See the [Roadmap](ROADMAP.md) for what's planned next.
 
 ## Stack
 
@@ -36,6 +79,10 @@ PORT=8099 \
 go run .
 ```
 
+> `MOCK_USER` (default `dev`) and `MOCK_ADMIN` (default `true`) only apply when
+> `AUTH_PROVIDER=mock`; they set the auto-logged-in user's name and admin rights.
+> `PLEX_SERVER_URL` Local Plex server URL. If unset, collected via the `/setup` wizard |
+
 > Photo folders are not configured via an env var. After the app starts, add a
 > library from the admin UI and pick its root folder with the directory browser
 > (it starts at `/photos` and you can navigate anywhere on the server).
@@ -59,15 +106,12 @@ go run testdata/gen/gen.go
 ```bash
 AUTH_PROVIDER=plex \
 PLEX_SERVER_URL=http://192.168.1.10:32400 \
-PLEX_MACHINE_ID=your-server-machine-id \
 DATA_PATH=./data \
 go run .
 ```
 
-> Find your server's machine ID with:
-> `curl -s http://<plex-host>:32400/identity` (look for `machineIdentifier`).
-> `SESSION_SECRET` is optional — if unset, a random key is generated and stored
-> at `<DATA_PATH>/session.key` on first run (set the env var only to pin it).
+> The server's machine ID is auto-detected from `PLEX_SERVER_URL` (via its
+> `/identity` endpoint), so you don't need to set it manually.
 > Plex sign-in uses a client-side popup PIN flow (the browser talks to plex.tv
 > directly), so no public callback URL is needed and `PUBLIC_BASE_URL` is not
 > required — login works the same via `localhost`, a LAN IP, or a reverse proxy.
@@ -139,14 +183,10 @@ A browser test plan and a `/test` Cursor skill are available — see [test/READM
 
 ## First-run setup
 
-In plex mode you no longer have to supply the Plex settings up front. If
-`PLEX_SERVER_URL` / `PLEX_MACHINE_ID` are not provided via environment variables,
-the app boots into a **first-run setup wizard** served at `/setup` (the root URL
-redirects there). Enter your Plex server URL and click **Check connection**: the
-app contacts `<serverURL>/identity` to verify the server is reachable and fetches
-its machine ID automatically. **Save and continue** stays disabled until the
-check succeeds. Settings are persisted in the data dir and applied immediately —
-no container restart.
+In plex mode, if `PLEX_SERVER_URL` isn't set via an environment variable, the app
+boots into a **first-run setup wizard** at `/setup` (the root URL redirects there)
+that walks you through connecting your Plex server. Settings are persisted in the
+data dir and applied immediately — no restart.
 
 Precedence is **environment variable > saved setting**: any value provided via
 env is authoritative and is not editable in the wizard. The setup page is
@@ -158,72 +198,46 @@ configured, so complete first-run setup on your local network.
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `AUTH_PROVIDER` | | `plex` | Auth backend: `plex` or `mock` (dev) |
-| `PLEX_SERVER_URL` | | first-run wizard | Local Plex server URL. If unset, collected via the `/setup` wizard |
-| `PLEX_MACHINE_ID` | | first-run wizard | Plex server machine ID (validates server access). If unset, auto-detected/collected via the `/setup` wizard |
-| `SESSION_SECRET` | | auto-generated | Cookie signing key. If unset, a random key is generated and persisted to `<DATA_PATH>/session.key` on first run |
 | `DATA_PATH` | yes | `/config` | Single mountable data dir (arr-style `/config`): holds the SQLite DB plus a `cache/` subfolder with `cache/thumbs` and `cache/art` (uploaded custom posters/backgrounds) |
 | `PORT` | | `8099` | HTTP listen port |
-| `THUMB_WIDTH` | | `400` | Thumbnail width in pixels |
 | `TZ` | | `UTC` | Timezone for logs |
-| `MOCK_USER` | | `dev` | Username when `AUTH_PROVIDER=mock` |
-| `MOCK_ADMIN` | | `true` | Whether the mock user is an admin |
 
 > **Photos are not configured via an env var.** Mount your photo folders into
 > the container (conventionally at `/photos`) and add a library from the admin
 > UI, choosing its root folder with the directory browser. Each library's root
 > is the anchor for everything beneath it.
 
-## Roadmap (V2)
+### Example `docker-compose.yml`
 
-### Scan pipeline
+A minimal production stack: Plex auth, your photos mounted read-only, and a
+volume for the app's data (DB + thumbnail cache).
 
-- Split metadata into its own labelled phase/progress bar in the UI
-  (`index → thumbnails → metadata`); today metadata is folded into the
-  "thumbnails" phase even though the work runs as its own per-photo step.
-- Surface the deep scan as an admin button, and retire the now-redundant
-  standalone "Regenerate thumbnails" / "Cleanup orphaned thumbnails" actions
-  (a deep scan already covers both).
+```yaml
+services:
+  plex-photos:
+    image: plex-photos:latest
+    container_name: plex-photos
+    ports:
+      - "8099:8099"
+    environment:
+      AUTH_PROVIDER: plex
+      TZ: America/New_York
+    volumes:
+      - /path/to/your/photos:/photos:ro   # your library, read-only
+      - plex-photos-data:/config          # SQLite DB + thumbnail cache
+    restart: unless-stopped
 
-### Search
+volumes:
+  plex-photos-data:
+```
 
-A search box to find photos across every library the user can access, querying
-the indexed metadata rather than scanning the filesystem on each request. The
-`photo_meta` / `photo_people` index already populated at scan time (capture
-date, dimensions, GPS, geocoded city/country, person tags) makes this feasible
-without re-reading EXIF per query.
+> Put it behind a reverse proxy (nginx / Traefik) for HTTPS. You can omit
+> `PLEX_SERVER_URL` and complete it through the `/setup` wizard on first run.
 
-Sketch:
+## Roadmap
 
-- A search endpoint that filters indexed photos by free text (filename, place,
-  person) and structured facets (date range, camera/lens, has-GPS, orientation),
-  scoped to the caller's accessible libraries.
-- Tokenize person/place names for partial matches; consider SQLite FTS5 for the
-  text columns if simple `LIKE` proves too limited.
-- A search affordance in the header that opens a results grid reusing the
-  existing photo tiles and viewer, plus an "open as slideshow" action.
-- Clickable tags as a faceted entry point: surface a photo's **person** and
-  **location** (geocoded place) tags — e.g. in the viewer's Details panel — as
-  links that run a pre-filled search for that person or place. Clicking a tag
-  opens the results grid for "all photos of this person" or "all photos taken
-  here," turning the indexed `photo_people` / `photo_meta` place data into
-  one-click navigation.
-- Naturally complements smart collections below (a saved search ≈ a rule-based
-  collection).
-
-### Smart collections
-
-Rule-based collections that populate automatically instead of being manually
-curated (analogous to Plex smart collections). Selected by filters such as date
-range, EXIF camera/lens, GPS area, filename pattern, or favorited status — and
-optionally combined with manual playlists.
-
-Sketch:
-
-- Persist a rule definition (e.g. JSON criteria) per smart collection.
-- Evaluate rules at query time over the indexed photo metadata (`photo_meta` /
-  `photo_people`: capture date, GPS, geocoded place, dimensions, person tags),
-  which is already populated during scans.
-- Surface them alongside playlists in the UI.
+Planned features (search, smart collections, scan-pipeline improvements) live in
+[ROADMAP.md](ROADMAP.md).
 
 ## License
 
