@@ -53,14 +53,40 @@ let viewerFadeTimer = null;
 const VIEWER_FADE_HALF_MS = 800;
 
 // ── general UI preferences ──
-// density: thumbnail tile size; sort: default album/collection order.
-const PREFS_DEFAULTS = { density: "medium", sort: "name" };
+// photoSize: photo thumbnail box size in px (driven by the size slider).
+// albumView/photoView: "grid" (cards / justified thumbs) or "list" (compact
+// rows with a small thumbnail). sort: default album/collection order.
+const PREFS_DEFAULTS = { photoSize: 200, sort: "name", albumView: "grid", photoView: "grid" };
+
+// Thumbnail size is a 3-stop scale (small / medium / large), in px. Medium is
+// the default. Legacy "density" values and any older continuous sizes snap onto
+// the nearest stop.
+const SIZE_STOPS = [140, 200, 300];
+const DENSITY_BOX = { small: 140, medium: 200, large: 300 };
+const clampSize = (n) => {
+  n = Number(n);
+  if (!Number.isFinite(n)) return PREFS_DEFAULTS.photoSize;
+  let best = SIZE_STOPS[0];
+  for (const s of SIZE_STOPS) if (Math.abs(s - n) < Math.abs(best - n)) best = s;
+  return best;
+};
+// Slider position (0..2) for the current size; defaults to medium.
+const sizeIndex = () => { const i = SIZE_STOPS.indexOf(clampSize(prefs.photoSize)); return i < 0 ? 1 : i; };
+const sizeFromIndex = (i) => SIZE_STOPS[+i] || PREFS_DEFAULTS.photoSize;
+
+// Fold any legacy `density` value into a `photoSize` so old saved prefs keep
+// working after the switch to a continuous size slider.
+function migratePrefs(p) {
+  if (p.photoSize == null && p.density) p.photoSize = DENSITY_BOX[p.density] || DENSITY_BOX.medium;
+  p.photoSize = clampSize(p.photoSize != null ? p.photoSize : PREFS_DEFAULTS.photoSize);
+  delete p.density;
+  return p;
+}
+
 function loadPrefs() {
-  try {
-    return { ...PREFS_DEFAULTS, ...JSON.parse(localStorage.getItem("ui-prefs") || "{}") };
-  } catch (_) {
-    return { ...PREFS_DEFAULTS };
-  }
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem("ui-prefs") || "{}"); } catch (_) { stored = {}; }
+  return migratePrefs({ ...PREFS_DEFAULTS, ...stored });
 }
 function savePrefs(p) {
   prefs = p;
@@ -69,9 +95,7 @@ function savePrefs(p) {
 }
 let prefs = loadPrefs();
 
-// Maps the density preference to a tile box size (px).
-const DENSITY_BOX = { small: 140, medium: 200, large: 280 };
-function photoBox() { return DENSITY_BOX[prefs.density] || DENSITY_BOX.medium; }
+function photoBox() { return clampSize(prefs.photoSize); }
 
 // ── server-synced preferences ──
 // Both UI prefs and slideshow settings are persisted server-side per user so
@@ -97,7 +121,7 @@ async function loadPrefsFromServer() {
   }
   if (remote && typeof remote === "object") {
     if (remote.ui && typeof remote.ui === "object") {
-      prefs = { ...PREFS_DEFAULTS, ...remote.ui };
+      prefs = migratePrefs({ ...PREFS_DEFAULTS, ...remote.ui });
       localStorage.setItem("ui-prefs", JSON.stringify(prefs));
     }
     if (remote.slideshow && typeof remote.slideshow === "object") {
@@ -139,10 +163,17 @@ const photoURL = (path) => (isArtPath(path) ? artURL(path) : "/api/photo/" + enc
 // Each tile fits within a square box, preserving the photo's real aspect
 // ratio. Wide photos get capped width, tall photos get capped height.
 function sizeToBox(tile, img) {
-  const box = photoBox();
+  // `apply` reads the live box size each time, so the same tile can be resized
+  // on the fly when the size slider moves (via tile._applySize).
   const apply = () => {
+    const box = photoBox();
     const w = img.naturalWidth, h = img.naturalHeight;
-    if (!(w > 0 && h > 0)) return;
+    if (!(w > 0 && h > 0)) {
+      // Square placeholder until the real ratio is known.
+      tile.style.width = box + "px";
+      tile.style.height = box + "px";
+      return;
+    }
     if (w >= h) {
       tile.style.width = box + "px";
       tile.style.height = Math.round(box * (h / w)) + "px";
@@ -151,11 +182,19 @@ function sizeToBox(tile, img) {
       tile.style.width = Math.round(box * (w / h)) + "px";
     }
   };
-  // Square placeholder until the real ratio is known.
-  tile.style.width = box + "px";
-  tile.style.height = box + "px";
-  if (img.complete && img.naturalWidth) apply();
-  else img.addEventListener("load", apply, { once: true });
+  tile._applySize = apply;
+  apply();
+  if (!(img.complete && img.naturalWidth)) img.addEventListener("load", apply, { once: true });
+}
+
+// Justified photo grids registered for live resizing by the size slider. The
+// list is rebuilt on every view render; stale (detached) grids are skipped.
+let photoGrids = [];
+function resizePhotoGrids() {
+  for (const g of photoGrids) {
+    if (!g.isConnected) continue;
+    g.querySelectorAll(".photo-thumb").forEach((tile) => { if (tile._applySize) tile._applySize(); });
+  }
 }
 
 async function api(path, opts = {}) {
@@ -466,7 +505,16 @@ async function renderLibrary(main, libraryId) {
   if (nodes.length === 0) {
     main.appendChild(el("div", { class: "empty", text: t("home.emptyScan") }));
   } else {
-    main.appendChild(carousel(nodes.map((c) => nodeCard(libraryId, c)), { variant: "landscape" }));
+    nodes.forEach((c) => { if (c.favorite) state.favorites.add(c.id); });
+    const block = el("div", { class: "lib-block" });
+    const rerender = () => navigate({ view: "library", libraryId });
+    block.appendChild(sectionHeader(t("node.collections"), [viewToggle("albumView", rerender)]));
+    if (prefs.albumView === "list") {
+      block.appendChild(nodeListView(libraryId, nodes));
+    } else {
+      block.appendChild(cardGrid(nodes.map((c) => nodeCard(libraryId, c)), { variant: "landscape" }));
+    }
+    main.appendChild(block);
   }
 }
 
@@ -534,22 +582,21 @@ async function renderPlaylist(main, route) {
     return;
   }
 
-  const grid = el("div", { class: "photo-grid justified" });
-  photos.forEach((p, i) => {
-    const img = el("img", { src: thumbURL(p.path), alt: esc(p.name), loading: "lazy" });
-    const tile = el("div", { class: "photo-thumb", onclick: () => openPlaylistViewer(pl, photos, i, false) });
-    tile.appendChild(img);
-    const rm = el("button", { class: "photo-remove", title: t("playlist.removeFrom"), html: icon("x") });
-    rm.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await removeFromPlaylist(pl.id, p.path);
-      navigate({ view: "playlist", playlistId: pl.id });
-    });
-    tile.appendChild(rm);
-    sizeToBox(tile, img);
-    grid.appendChild(tile);
-  });
-  main.appendChild(grid);
+  photoGrids = [];
+  const rerender = () => navigate({ view: "playlist", playlistId: pl.id });
+  const onRemove = async (p) => { await removeFromPlaylist(pl.id, p.path); rerender(); };
+
+  const block = el("div", { class: "lib-block" });
+  const controls = [];
+  if (prefs.photoView !== "list") controls.push(sizeSlider());
+  controls.push(viewToggle("photoView", rerender));
+  block.appendChild(sectionHeader(t("node.photos"), controls));
+  if (prefs.photoView === "list") {
+    block.appendChild(photoListView(photos, (i) => openPlaylistViewer(pl, photos, i, false), { onRemove }));
+  } else {
+    block.appendChild(photoGridView(photos, (i) => openPlaylistViewer(pl, photos, i, false), { onRemove }));
+  }
+  main.appendChild(block);
 }
 
 // openPlaylistViewer opens the viewer for a playlist's photos, tagging the album
@@ -1572,7 +1619,21 @@ function nodeCard(libraryId, n, opts = {}) {
   const favHtml = isAlbum
     ? `<button class="card-fav${isFav ? " active" : ""}" title="${esc(t("album.fav"))}">${icon(isFav ? "heart-filled" : "heart")}</button>`
     : "";
-  const parentHtml = opts.parent ? `<div class="card-parent">${esc(opts.parent)}</div>` : "";
+  // Parent line: show the full path of collections leading to the album
+  // (library › collection1 › collection2), with the album name kept as the
+  // title above. folderPath is relative to the library root and includes the
+  // album's own folder as its last segment, which we drop here.
+  const pathSegs = opts.parent ? [opts.parent] : [];
+  const rel = (n.folderPath || "").replace(/^\.[\\/]?/, "");
+  if (rel && rel !== ".") {
+    const parts = rel.split(/[\\/]/).filter(Boolean);
+    parts.pop();
+    pathSegs.push(...parts);
+  }
+  const pathText = pathSegs.join(" / ");
+  const parentHtml = pathSegs.length
+    ? `<div class="card-parent" title="${esc(pathText)}">${pathSegs.map((s) => esc(s)).join('<span class="card-path-sep">/</span>')}</div>`
+    : "";
 
   // Counts line: show sub-collection and/or photo counts as applicable. Use the
   // recursive total so a collection that only holds sub-folders still shows how
@@ -1588,7 +1649,7 @@ function nodeCard(libraryId, n, opts = {}) {
     onclick: () => navigate({ view: "node", libraryId, nodeId: n.id }),
     html: `<div class="card-thumb">${thumb}${favHtml}</div>
       <div class="card-body">
-        <div class="card-title">${esc(n.name)}</div>
+        <div class="card-title" title="${esc(n.name)}">${esc(n.name)}</div>
         ${parentHtml}
         <div class="card-counts">${counts.join("")}</div>
       </div>`,
@@ -1668,6 +1729,123 @@ function cardGrid(cards, opts = {}) {
   return grid;
 }
 
+// ── view controls (size slider + grid/list toggle) ──
+// A section header with a title on the left and optional controls on the right
+// (the size slider and/or the grid↔list toggle).
+function sectionHeader(title, controls) {
+  const h = el("div", { class: "section-header" });
+  h.appendChild(el("div", { html: `<div class="section-title">${esc(title)}</div>` }));
+  if (controls && controls.length) h.appendChild(el("div", { class: "view-toolbar" }, controls));
+  return h;
+}
+
+// A range slider that scales the justified photo thumbnails. Dragging resizes
+// the currently rendered grids live (no refetch); the value is persisted on
+// release.
+function sizeSlider() {
+  const wrap = el("div", { class: "size-slider", title: t("view.size") });
+  const input = el("input", {
+    type: "range", min: 0, max: SIZE_STOPS.length - 1, step: 1,
+    value: sizeIndex(), "aria-label": t("view.size"),
+  });
+  input.addEventListener("input", () => {
+    prefs.photoSize = sizeFromIndex(input.value);
+    resizePhotoGrids();
+  });
+  input.addEventListener("change", () => savePrefs({ ...prefs, photoSize: sizeFromIndex(input.value) }));
+  wrap.appendChild(el("span", { class: "size-slider-icon size-slider-icon--sm", html: icon("photo") }));
+  wrap.appendChild(input);
+  wrap.appendChild(el("span", { class: "size-slider-icon size-slider-icon--lg", html: icon("photo") }));
+  return wrap;
+}
+
+// A segmented grid↔list toggle bound to a pref key. Switching re-renders the
+// current view via the supplied callback.
+function viewToggle(prefKey, rerender) {
+  const wrap = el("div", { class: "view-toggle" });
+  const make = (mode, ic, label) => {
+    const b = el("button", {
+      class: "view-toggle-btn" + (prefs[prefKey] === mode ? " active" : ""),
+      title: label, "aria-label": label, html: icon(ic),
+    });
+    b.addEventListener("click", () => {
+      if (prefs[prefKey] === mode) return;
+      savePrefs({ ...prefs, [prefKey]: mode });
+      rerender();
+    });
+    return b;
+  };
+  wrap.appendChild(make("grid", "layout-grid", t("view.grid")));
+  wrap.appendChild(make("list", "list", t("view.list")));
+  return wrap;
+}
+
+// The justified, box-fit photo grid. Registered for live resizing by the size
+// slider. opts: { coverPath, onRemove(p) }.
+function photoGridView(photos, onClick, opts = {}) {
+  const grid = el("div", { class: "photo-grid justified" });
+  photos.forEach((p, i) => {
+    const isCover = opts.coverPath && opts.coverPath === p.path;
+    const img = el("img", { src: thumbURL(p.path), alt: esc(p.name), loading: "lazy" });
+    const tile = el("div", { class: "photo-thumb" + (isCover ? " cover" : ""), onclick: () => onClick(i) });
+    tile.appendChild(img);
+    if (opts.onRemove) {
+      const rm = el("button", { class: "photo-remove", title: t("playlist.removeFrom"), html: icon("x") });
+      rm.addEventListener("click", (e) => { e.stopPropagation(); opts.onRemove(p); });
+      tile.appendChild(rm);
+    }
+    sizeToBox(tile, img);
+    grid.appendChild(tile);
+  });
+  photoGrids.push(grid);
+  return grid;
+}
+
+// A compact, table-like list of photos: a small fixed thumbnail plus the file
+// name per row. opts: { onRemove(p) }.
+function photoListView(photos, onClick, opts = {}) {
+  const list = el("div", { class: "photo-list" });
+  photos.forEach((p, i) => {
+    const row = el("div", { class: "photo-list-row", onclick: () => onClick(i) });
+    row.appendChild(el("div", { class: "photo-list-thumb" }, [
+      el("img", { src: thumbURL(p.path), alt: "", loading: "lazy" }),
+    ]));
+    row.appendChild(el("div", { class: "photo-list-name", text: p.name, title: p.name }));
+    if (opts.onRemove) {
+      const rm = el("button", { class: "photo-list-remove", title: t("playlist.removeFrom"), html: icon("x") });
+      rm.addEventListener("click", (e) => { e.stopPropagation(); opts.onRemove(p); });
+      row.appendChild(rm);
+    }
+    list.appendChild(row);
+  });
+  return list;
+}
+
+// A compact, table-like list of albums/collections: small thumbnail, name and
+// counts per row. opts: { poster, parent } mirror nodeCard's art preferences.
+function nodeListView(libraryId, nodes, opts = {}) {
+  const list = el("div", { class: "node-list" });
+  nodes.forEach((n) => {
+    const art = opts.poster ? (n.coverPhoto || n.backgroundPhoto) : (n.backgroundPhoto || n.coverPhoto);
+    const thumb = art ? `<img src="${thumbURL(art)}" alt="" loading="lazy">` : icon(n.hasChildren ? "folder" : "photo");
+    const totalPhotos = n.totalPhotoCount != null ? n.totalPhotoCount : (n.photoCount || 0);
+    const counts = [];
+    if (n.hasChildren || (n.childCount || 0) > 0) counts.push(t("card.collectionCount", { n: n.childCount || 0 }));
+    if (totalPhotos > 0 || (n.photoCount || 0) > 0) counts.push(t("meta.photos", { n: totalPhotos }));
+    const row = el("div", {
+      class: "node-list-row",
+      onclick: () => navigate({ view: "node", libraryId, nodeId: n.id }),
+      html: `<div class="node-list-thumb">${thumb}</div>
+        <div class="node-list-info">
+          <div class="node-list-name" title="${esc(n.name)}">${esc(n.name)}</div>
+          <div class="node-list-meta">${esc(counts.join("  ·  "))}</div>
+        </div>`,
+    });
+    list.appendChild(row);
+  });
+  return list;
+}
+
 // renderNode renders a single tree node: sub-collections as a grid on top
 // (when present) and the node's own photos below (when present). A node may be
 // a collection, an album, or both at once.
@@ -1693,6 +1871,8 @@ async function renderNode(main, route) {
   const lib = state.libraries.find((l) => l.id === route.libraryId) || { id: node.libraryId };
   const libName = lib && lib.name ? lib.name : t("library.default");
   main.innerHTML = "";
+  photoGrids = [];
+  const rerenderNode = () => navigate({ view: "node", libraryId: route.libraryId, nodeId: route.nodeId });
 
   // Breadcrumb: library > ...ancestors... > node.
   const bc = el("div", { class: "breadcrumb" });
@@ -1769,47 +1949,45 @@ async function renderNode(main, route) {
 
   // Sub-collections (children with their own sub-folders) as landscape cards.
   if (childCollections.length > 0) {
+    childCollections.forEach((c) => { if (c.favorite) state.favorites.add(c.id); });
     const block = el("div", { class: "lib-block" });
-    block.appendChild(el("div", { class: "section-header", html: `<div><div class="section-title">${esc(t("node.collections"))}</div></div>` }));
-    const cards = childCollections.map((c) => {
-      if (c.favorite) state.favorites.add(c.id);
-      return nodeCard(route.libraryId, c);
-    });
-    block.appendChild(cardGrid(cards, { variant: "landscape" }));
+    block.appendChild(sectionHeader(t("node.collections"), [viewToggle("albumView", rerenderNode)]));
+    if (prefs.albumView === "list") {
+      block.appendChild(nodeListView(route.libraryId, childCollections));
+    } else {
+      block.appendChild(cardGrid(childCollections.map((c) => nodeCard(route.libraryId, c)), { variant: "landscape" }));
+    }
     main.appendChild(block);
   }
 
   // Leaf albums (children holding photos) as poster cards.
   if (childAlbums.length > 0) {
+    childAlbums.forEach((c) => { if (c.favorite) state.favorites.add(c.id); });
     const block = el("div", { class: "lib-block" });
-    block.appendChild(el("div", { class: "section-header", html: `<div><div class="section-title">${esc(t("node.albums"))}</div></div>` }));
-    const cards = childAlbums.map((c) => {
-      if (c.favorite) state.favorites.add(c.id);
-      return nodeCard(route.libraryId, c, { poster: true, parent: node.name });
-    });
-    block.appendChild(cardGrid(cards, { variant: "poster" }));
+    block.appendChild(sectionHeader(t("node.albums"), [viewToggle("albumView", rerenderNode)]));
+    if (prefs.albumView === "list") {
+      block.appendChild(nodeListView(route.libraryId, childAlbums, { poster: true, parent: node.name }));
+    } else {
+      const cards = childAlbums.map((c) => nodeCard(route.libraryId, c, { poster: true, parent: node.name }));
+      block.appendChild(cardGrid(cards, { variant: "poster" }));
+    }
     main.appendChild(block);
   }
 
   // The node's own photos below.
   if (hasPhotos) {
-    if (childCollections.length > 0 || childAlbums.length > 0) {
-      main.appendChild(el("div", { class: "section-header", html: `<div><div class="section-title">${esc(t("node.photos"))}</div></div>` }));
-    }
-    const grid = el("div", { class: "photo-grid justified" });
     state.currentAlbum = node;
-    photos.forEach((p, i) => {
-      const isCover = node.coverPhoto && node.coverPhoto === p.path;
-      const img = el("img", { src: thumbURL(p.path), alt: esc(p.name), loading: "lazy" });
-      const tile = el("div", {
-        class: "photo-thumb" + (isCover ? " cover" : ""),
-        onclick: () => openViewer(photos, i, node, false),
-      });
-      tile.appendChild(img);
-      sizeToBox(tile, img);
-      grid.appendChild(tile);
-    });
-    main.appendChild(grid);
+    const block = el("div", { class: "lib-block" });
+    const controls = [];
+    if (prefs.photoView !== "list") controls.push(sizeSlider());
+    controls.push(viewToggle("photoView", rerenderNode));
+    block.appendChild(sectionHeader(t("node.photos"), controls));
+    if (prefs.photoView === "list") {
+      block.appendChild(photoListView(photos, (i) => openViewer(photos, i, node, false)));
+    } else {
+      block.appendChild(photoGridView(photos, (i) => openViewer(photos, i, node, false), { coverPath: node.coverPhoto }));
+    }
+    main.appendChild(block);
   }
 
   if (children.length === 0 && !hasPhotos) {
@@ -3194,13 +3372,34 @@ function renderSettings(main) {
     navigate({ view: "settings" });
   };
 
-  const density = el("select", { class: "control sm" });
-  [["small", t("settings.density.small")], ["medium", t("settings.density.medium")], ["large", t("settings.density.large")]].forEach(([val, label]) => {
-    density.appendChild(el("option", { value: val, text: label }));
+  // Thumbnail size as a slider (same control offered inline on album pages).
+  const sizeWrap = el("div", { class: "size-slider size-slider--settings", title: t("view.size") });
+  const sizeInput = el("input", {
+    type: "range", min: 0, max: SIZE_STOPS.length - 1, step: 1,
+    value: sizeIndex(), "aria-label": t("view.size"),
   });
-  density.value = prefs.density;
-  density.addEventListener("change", () => updatePref("density", density.value));
-  generalRow("settings.density", "settings.density.desc", density);
+  sizeInput.addEventListener("input", () => { prefs.photoSize = sizeFromIndex(sizeInput.value); resizePhotoGrids(); });
+  sizeInput.addEventListener("change", () => savePrefs({ ...prefs, photoSize: sizeFromIndex(sizeInput.value) }));
+  sizeWrap.appendChild(el("span", { class: "size-slider-icon size-slider-icon--sm", html: icon("photo") }));
+  sizeWrap.appendChild(sizeInput);
+  sizeWrap.appendChild(el("span", { class: "size-slider-icon size-slider-icon--lg", html: icon("photo") }));
+  generalRow("settings.density", "settings.density.desc", sizeWrap);
+
+  const albumView = el("select", { class: "control sm" });
+  [["grid", t("view.grid")], ["list", t("view.list")]].forEach(([val, label]) => {
+    albumView.appendChild(el("option", { value: val, text: label }));
+  });
+  albumView.value = prefs.albumView;
+  albumView.addEventListener("change", () => updatePref("albumView", albumView.value));
+  generalRow("settings.albumView", "settings.albumView.desc", albumView);
+
+  const photoView = el("select", { class: "control sm" });
+  [["grid", t("view.grid")], ["list", t("view.list")]].forEach(([val, label]) => {
+    photoView.appendChild(el("option", { value: val, text: label }));
+  });
+  photoView.value = prefs.photoView;
+  photoView.addEventListener("change", () => updatePref("photoView", photoView.value));
+  generalRow("settings.photoView", "settings.photoView.desc", photoView);
 
   const sort = el("select", { class: "control sm" });
   [["name", t("settings.sort.name")], ["nameDesc", t("settings.sort.nameDesc")]].forEach(([val, label]) => {
@@ -3457,6 +3656,12 @@ document.addEventListener("click", (e) => {
 });
 
 $("#viewer-close").addEventListener("click", closeViewer);
+// Click on the dark backdrop (anywhere that isn't the photo or a control) closes
+// the viewer, matching the behaviour of typical web lightboxes.
+$("#viewer").addEventListener("click", (e) => {
+  if (e.target.closest(".viewer-img, .viewer-nav, .viewer-close, .viewer-toolbar, .viewer-info, .viewer-menu, .viewer-overlay")) return;
+  closeViewer();
+});
 $("#viewer-prev").addEventListener("click", () => { stopSlideshow(); viewerStep(-1); });
 $("#viewer-next").addEventListener("click", () => { stopSlideshow(); viewerStep(1); });
 $("#viewer-slideshow").addEventListener("click", () => { if (state.slideshowActive) stopSlideshow(); else startSlideshow(); });

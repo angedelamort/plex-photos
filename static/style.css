@@ -250,6 +250,7 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   margin-top: 1px;
 }
+.card-path-sep { margin: 0 4px; opacity: 0.55; font-weight: 400; }
 
 /* Landscape cards (collections): 16:9 background art, floating right-aligned counts */
 .grid--landscape {
@@ -414,6 +415,101 @@ body {
 .photo-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .photo-thumb .icon { font-size: 22px; color: rgba(255,255,255,0.08); }
 .photo-thumb.cover { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ── VIEW CONTROLS (size slider + grid/list toggle) ── */
+.view-toolbar { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+
+/* Plex-style size slider: a thin track with a round accent thumb, flanked by
+   small/large photo glyphs to convey "smaller ↔ larger". */
+.size-slider { display: flex; align-items: center; gap: 8px; }
+.size-slider-icon { color: var(--text-hint); display: inline-flex; }
+.size-slider-icon--sm .icon { font-size: 13px; }
+.size-slider-icon--lg .icon { font-size: 18px; }
+.size-slider input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 120px; height: 18px; background: transparent; cursor: pointer; margin: 0;
+}
+.size-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 999px; background: rgba(255,255,255,0.18);
+}
+.size-slider input[type="range"]::-moz-range-track {
+  height: 3px; border-radius: 999px; background: rgba(255,255,255,0.18);
+}
+.size-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; margin-top: -5.5px;
+  width: 14px; height: 14px; border-radius: 50%; background: var(--accent);
+  border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  transition: transform 0.1s;
+}
+.size-slider input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; background: var(--accent);
+  border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+.size-slider input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); }
+.size-slider input[type="range"]:focus-visible { outline: none; }
+.size-slider input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-dim); }
+.size-slider input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px var(--accent-dim); }
+.size-slider--settings input[type="range"] { width: 180px; }
+
+/* Segmented grid/list toggle. */
+.view-toggle {
+  display: inline-flex; background: rgba(255,255,255,0.05);
+  border: 0.5px solid var(--border-hover); border-radius: var(--radius); overflow: hidden;
+}
+.view-toggle-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 30px; padding: 0; border: none; cursor: pointer;
+  background: none; color: var(--text-muted);
+  transition: background 0.12s, color 0.12s;
+}
+.view-toggle-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.view-toggle-btn.active { color: var(--accent); background: var(--accent-dim); }
+.view-toggle-btn .icon { font-size: 16px; }
+.view-toggle-btn + .view-toggle-btn { border-left: 0.5px solid var(--border-hover); }
+
+/* ── PHOTO LIST (table-like, small thumbnail + name) ── */
+.photo-list, .node-list { display: flex; flex-direction: column; gap: 2px; }
+.photo-list-row, .node-list-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 8px; border-radius: var(--radius); cursor: pointer;
+  border: 0.5px solid transparent; transition: background 0.12s, border-color 0.12s;
+}
+.photo-list-row:hover, .node-list-row:hover {
+  background: rgba(255,255,255,0.04); border-color: var(--border);
+}
+.photo-list-thumb {
+  width: 48px; height: 48px; flex-shrink: 0; border-radius: 5px; overflow: hidden;
+  background: #252525; display: flex; align-items: center; justify-content: center;
+}
+.photo-list-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.photo-list-name {
+  flex: 1; min-width: 0; font-size: 13px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.photo-list-remove {
+  flex-shrink: 0; width: 28px; height: 28px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 0.5px solid var(--border-hover); border-radius: 50%;
+  background: rgba(255,255,255,0.05); color: var(--text-muted); cursor: pointer;
+  opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.photo-list-row:hover .photo-list-remove { opacity: 1; }
+.photo-list-remove:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+.photo-list-remove .icon { font-size: 15px; }
+
+/* ── NODE LIST (albums/collections as rows) ── */
+.node-list-thumb {
+  width: 56px; height: 42px; flex-shrink: 0; border-radius: 5px; overflow: hidden;
+  background: #252525; display: flex; align-items: center; justify-content: center;
+}
+.node-list-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.node-list-thumb .icon { font-size: 20px; color: rgba(255,255,255,0.12); }
+.node-list-info { min-width: 0; flex: 1; }
+.node-list-name {
+  font-size: 14px; font-weight: 500; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.node-list-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 
 /* ── BUTTONS ── */
 .btn {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -620,7 +621,7 @@ func TimeBucketSeed(window time.Duration) int64 {
 const homeNodeSelect = `SELECT n.id, n.library_id, COALESCE(n.parent_id, ''), n.name, n.fs_path, n.depth, n.photo_count, n.has_children,
 		COALESCE(n.cover_photo, ''), COALESCE(n.background_photo, ''),
 		COALESCE(n.sort_title, ''), COALESCE(n.summary, ''), COALESCE(n.content_rating, ''), COALESCE(n.year, ''), COALESCE(n.studio, ''),
-		l.name`
+		l.name, l.root_path`
 
 func (s *Store) queryHomeNodes(query string, args ...any) ([]*HomeNode, error) {
 	rows, err := s.db.Query(query, args...)
@@ -632,13 +633,19 @@ func (s *Store) queryHomeNodes(query string, args ...any) ([]*HomeNode, error) {
 	for rows.Next() {
 		var a HomeNode
 		var hasChildren int
+		var rootPath string
 		if err := rows.Scan(&a.ID, &a.LibraryID, &a.ParentID, &a.Name, &a.FSPath, &a.Depth, &a.PhotoCount, &hasChildren,
 			&a.CoverPhoto, &a.BackgroundPhoto, &a.SortTitle, &a.Summary, &a.ContentRating, &a.Year, &a.Studio,
-			&a.LibraryName); err != nil {
+			&a.LibraryName, &rootPath); err != nil {
 			return nil, err
 		}
 		a.HasChildren = hasChildren != 0
 		a.Type = nodeType(a.HasChildren, a.PhotoCount)
+		// FolderPath is the node's path relative to its library root, used by
+		// home cards to show the full collection path leading to the album.
+		if rel, err := filepath.Rel(rootPath, a.FSPath); err == nil {
+			a.FolderPath = filepath.ToSlash(rel)
+		}
 		out = append(out, &a)
 	}
 	if err := rows.Err(); err != nil {
