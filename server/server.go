@@ -176,6 +176,11 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("PUT /api/nodes/{node}/favorite", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.SetFavorite)))
 	mux.Handle("DELETE /api/nodes/{node}/favorite", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.SetFavorite)))
 
+	// --- Photo ratings (per-user, 1–5 stars) ---
+	mux.Handle("GET /api/rating/{path...}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.GetPhotoRating)))
+	mux.Handle("PUT /api/rating/{path...}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.SetPhotoRating)))
+	mux.Handle("DELETE /api/rating/{path...}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.SetPhotoRating)))
+
 	// --- Playlists (per-user) ---
 	mux.Handle("GET /api/playlists", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.ListPlaylists)))
 	mux.Handle("POST /api/playlists", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.CreatePlaylist)))
@@ -184,6 +189,13 @@ func NewMux(d Deps) *http.ServeMux {
 	mux.Handle("DELETE /api/playlists/{id}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.DeletePlaylist)))
 	mux.Handle("POST /api/playlists/{id}/items", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.AddPlaylistItems)))
 	mux.Handle("DELETE /api/playlists/{id}/items", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.RemovePlaylistItem)))
+
+	// --- Smart collections (per-user, rule-based) ---
+	mux.Handle("GET /api/smart-collections", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.ListSmartCollections)))
+	mux.Handle("POST /api/smart-collections", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.CreateSmartCollection)))
+	mux.Handle("GET /api/smart-collections/{id}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.GetSmartCollection)))
+	mux.Handle("PUT /api/smart-collections/{id}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.UpdateSmartCollection)))
+	mux.Handle("DELETE /api/smart-collections/{id}", d.Mw.RequireAuth(http.HandlerFunc(d.Gallery.DeleteSmartCollection)))
 
 	// --- Frame TV (admin-managed, controllable by any authenticated user) ---
 	if d.TV != nil {

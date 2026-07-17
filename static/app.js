@@ -18,7 +18,13 @@ const state = {
   // When the viewer is showing photos from a playlist, this holds that
   // playlist's id so "Remove from playlist" can act on the current photo.
   currentPlaylistId: null,
+  // Current photo's 1–5 star rating (0 = unrated). Cached per path in ratingCache.
+  photoRating: 0,
 };
+
+// Per-user photo star ratings (path → 0..5). Populated lazily as the viewer
+// opens each photo.
+const ratingCache = new Map();
 
 // ── slideshow settings ──
 // fitMode: "fit" (contain, no crop) | "fill" (crop to fill) | "scroll" (fill width, auto-pan)
@@ -331,6 +337,7 @@ function routeToPath(route) {
     case "node": return `/library/${route.libraryId}/node/${route.nodeId}`;
     case "playlists": return "/playlists";
     case "playlist": return `/playlist/${route.playlistId}`;
+    case "smartCollection": return `/smart-collection/${route.smartCollectionId}`;
     case "tv": return "/tv";
     case "tvDetail": return `/tv/${route.tvId}`;
     case "admin": return "/admin";
@@ -350,6 +357,7 @@ function pathToRoute(pathname) {
   if (parts.length === 0) return { view: "home" };
   if (parts[0] === "playlists") return { view: "playlists" };
   if (parts[0] === "playlist" && parts[1]) return { view: "playlist", playlistId: decodeURIComponent(parts[1]) };
+  if (parts[0] === "smart-collection" && parts[1]) return { view: "smartCollection", smartCollectionId: decodeURIComponent(parts[1]) };
   if (parts[0] === "tv" && parts[1]) return { view: "tvDetail", tvId: decodeURIComponent(parts[1]) };
   if (parts[0] === "tv") return { view: "tv" };
   if (parts[0] === "admin" && parts[1] === "tv") return { view: "admin-tv" };
@@ -393,6 +401,7 @@ async function navigate(route, opts = {}) {
       case "node": await renderNode(main, route); break;
       case "playlists": setActiveSidebar(null, "playlists"); await renderPlaylists(main); break;
       case "playlist": setActiveSidebar(null, "playlists"); await renderPlaylist(main, route); break;
+      case "smartCollection": setActiveSidebar(null, "playlists"); await renderSmartCollection(main, route); break;
       case "tv": setActiveSidebar(null, "tv"); await renderTVList(main); break;
       case "tvDetail": setActiveSidebar(null, "tv"); await renderTVDetail(main, route); break;
       case "admin": setActiveSidebar(null, true); await renderAdmin(main); break;
@@ -518,23 +527,39 @@ async function renderLibrary(main, libraryId) {
   }
 }
 
-// ── playlists ──
-// Playlists are user-owned, hand-curated photo sets independent of the folder
-// tree. The list page shows poster cards; a detail page shows the photos with a
-// slideshow and per-photo removal.
+// ── playlists & smart collections ──
+// Playlists are user-owned, hand-curated photo sets. Smart collections are
+// rule-based (v1: min star rating) and evaluated at query time.
 async function renderPlaylists(main) {
-  const pls = await api("/api/playlists");
+  const [pls, smarts] = await Promise.all([
+    api("/api/playlists"),
+    api("/api/smart-collections"),
+  ]);
   main.innerHTML = "";
-  const header = el("div", { class: "section-header" });
-  header.appendChild(el("div", { html: `<div class="section-title">${esc(t("playlist.title"))}</div><div class="section-sub">${esc(t("playlist.count", { n: pls.length }))}</div>` }));
-  header.appendChild(el("button", { class: "btn accent", html: `${icon("plus")} ${esc(t("playlist.newShort"))}`, onclick: () => openPlaylistModal(null) }));
-  main.appendChild(header);
+
+  const plHeader = el("div", { class: "section-header" });
+  plHeader.appendChild(el("div", { html: `<div class="section-title">${esc(t("playlist.title"))}</div><div class="section-sub">${esc(t("playlist.count", { n: pls.length }))}</div>` }));
+  plHeader.appendChild(el("button", { class: "btn accent", html: `${icon("plus")} ${esc(t("playlist.newShort"))}`, onclick: () => openPlaylistModal(null) }));
+  main.appendChild(plHeader);
 
   if (!pls || pls.length === 0) {
     main.appendChild(el("div", { class: "empty", text: t("playlist.none") }));
-    return;
+  } else {
+    main.appendChild(cardGrid(pls.map(playlistCard), { variant: "poster" }));
   }
-  main.appendChild(cardGrid(pls.map(playlistCard), { variant: "poster" }));
+
+  main.appendChild(el("div", { class: "section-spacer" }));
+
+  const smartHeader = el("div", { class: "section-header" });
+  smartHeader.appendChild(el("div", { html: `<div class="section-title">${esc(t("smart.title"))}</div><div class="section-sub">${esc(t("smart.count", { n: smarts.length }))}</div>` }));
+  smartHeader.appendChild(el("button", { class: "btn", html: `${icon("star-filled")} ${esc(t("smart.newShort"))}`, onclick: () => openSmartModal(null) }));
+  main.appendChild(smartHeader);
+
+  if (!smarts || smarts.length === 0) {
+    main.appendChild(el("div", { class: "empty", text: t("smart.none") }));
+  } else {
+    main.appendChild(cardGrid(smarts.map(smartCollectionCard), { variant: "poster" }));
+  }
 }
 
 function playlistCard(pl) {
@@ -547,6 +572,24 @@ function playlistCard(pl) {
       <div class="card-body">
         <div class="card-title">${esc(pl.name)}</div>
         <div class="card-counts"><span>${esc(t("meta.photos", { n: pl.photoCount || 0 }))}</span></div>
+      </div>`,
+  });
+}
+
+function smartCollectionCard(col) {
+  const art = col.coverPhoto;
+  const thumb = art ? `<img src="${thumbURL(art)}" alt="" loading="lazy">` : icon("star-filled");
+  const minRating = col.rules && col.rules.minRating ? col.rules.minRating : 1;
+  return el("div", {
+    class: "card card--poster",
+    onclick: () => navigate({ view: "smartCollection", smartCollectionId: col.id }),
+    html: `<div class="card-thumb">${thumb}</div>
+      <div class="card-body">
+        <div class="card-title">${esc(col.name)}</div>
+        <div class="card-counts">
+          <span>${esc(t("meta.photos", { n: col.photoCount || 0 }))}</span>
+          <span> · ${esc(t("smart.ruleMinRating", { n: minRating }))}</span>
+        </div>
       </div>`,
   });
 }
@@ -643,6 +686,135 @@ async function deletePlaylist(pl) {
   } catch (e) {
     alert(t("alert.error", { msg: e.message }));
   }
+}
+
+async function renderSmartCollection(main, route) {
+  const data = await api(`/api/smart-collections/${route.smartCollectionId}`);
+  const col = data.collection;
+  const photos = data.photos || [];
+  main.innerHTML = "";
+
+  const minRating = col.rules && col.rules.minRating ? col.rules.minRating : 1;
+  const actions = [];
+  if (photos.length > 0) {
+    actions.push(el("button", {
+      class: "btn accent", html: `${icon("play")} ${esc(t("viewer.slideshow"))}`,
+      onclick: () => openSmartCollectionViewer(col, photos, 0, true),
+    }));
+  }
+  actions.push(el("button", {
+    class: "btn icon-btn", html: icon("pen"), title: t("smart.edit"),
+    onclick: () => openSmartModal(col),
+  }));
+  actions.push(el("button", {
+    class: "btn icon-btn danger", html: icon("trash"), title: t("smart.delete"),
+    onclick: () => deleteSmartCollection(col),
+  }));
+
+  main.appendChild(hero(col.name, "", col.coverPhoto || "", actions, "", {
+    meta: [
+      t("meta.photos", { n: photos.length }),
+      t("smart.ruleMinRating", { n: minRating }),
+    ],
+  }));
+
+  if (photos.length === 0) {
+    main.appendChild(el("div", { class: "empty", text: t("smart.empty") }));
+    return;
+  }
+
+  photoGrids = [];
+  const rerender = () => navigate({ view: "smartCollection", smartCollectionId: col.id });
+  const block = el("div", { class: "lib-block" });
+  const controls = [];
+  if (prefs.photoView !== "list") controls.push(sizeSlider());
+  controls.push(viewToggle("photoView", rerender));
+  block.appendChild(sectionHeader(t("node.photos"), controls));
+  if (prefs.photoView === "list") {
+    block.appendChild(photoListView(photos, (i) => openSmartCollectionViewer(col, photos, i, false)));
+  } else {
+    block.appendChild(photoGridView(photos, (i) => openSmartCollectionViewer(col, photos, i, false)));
+  }
+  main.appendChild(block);
+}
+
+function openSmartCollectionViewer(col, photos, index, slideshow) {
+  const list = slideshow ? maybeShuffle(photos) : photos;
+  openViewer(list, slideshow ? 0 : index, { id: col.id, name: col.name, coverScope: "smart" }, slideshow);
+}
+
+let editingSmartCollection = null;
+let smartModalMinRating = 4;
+
+function paintSmartModalStars(minRating) {
+  $("#smart-modal-stars").querySelectorAll(".smart-modal-star").forEach((btn) => {
+    const n = Number(btn.dataset.rating);
+    btn.classList.toggle("on", n <= minRating);
+    btn.innerHTML = icon(n <= minRating ? "star-filled" : "star");
+    btn.setAttribute("aria-pressed", n === minRating ? "true" : "false");
+  });
+  $("#smart-min-hint").textContent = t("smart.ruleMinRating", { n: minRating });
+}
+
+function openSmartModal(col) {
+  editingSmartCollection = col;
+  $("#smart-modal-title").textContent = col ? t("smart.edit") : t("smart.new");
+  $("#smart-name").value = col ? col.name : "";
+  smartModalMinRating = col && col.rules && col.rules.minRating ? col.rules.minRating : 4;
+  paintSmartModalStars(smartModalMinRating);
+  $("#smart-modal").hidden = false;
+  setTimeout(() => $("#smart-name").focus(), 30);
+}
+
+function closeSmartModal() {
+  $("#smart-modal").hidden = true;
+  editingSmartCollection = null;
+}
+
+async function saveSmartCollection() {
+  const name = $("#smart-name").value.trim();
+  if (!name) { alert(t("smart.nameRequired")); return; }
+  const body = { name, minRating: smartModalMinRating };
+  try {
+    if (editingSmartCollection) {
+      const id = editingSmartCollection.id;
+      await api(`/api/smart-collections/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      closeSmartModal();
+      navigate({ view: "smartCollection", smartCollectionId: id });
+    } else {
+      const col = await api("/api/smart-collections", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      closeSmartModal();
+      navigate({ view: "smartCollection", smartCollectionId: col.id });
+    }
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+async function deleteSmartCollection(col) {
+  if (!confirm(t("smart.confirmDelete", { name: col.name }))) return;
+  try {
+    await api(`/api/smart-collections/${col.id}`, { method: "DELETE" });
+    navigate({ view: "playlists" });
+  } catch (e) {
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+function bindSmartModalStars() {
+  const wrap = $("#smart-modal-stars");
+  if (!wrap || wrap.dataset.bound) return;
+  wrap.dataset.bound = "1";
+  wrap.querySelectorAll(".smart-modal-star").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      smartModalMinRating = Number(btn.dataset.rating);
+      paintSmartModalStars(smartModalMinRating);
+    });
+  });
 }
 
 async function removeFromPlaylist(playlistId, path) {
@@ -2050,6 +2222,7 @@ function updateViewer() {
     img.src = photoURL(p.path);
     if (mode === "scroll") setupAutoScroll(img);
     $("#viewer-caption").textContent = `${p.name}  (${state.photoIndex + 1}/${state.photos.length})`;
+    loadPhotoRating(p.path);
     if (state.infoOpen) loadInfo();
     applyOverlay();
   };
@@ -2171,6 +2344,103 @@ function stopSlideshow() {
   img.style.removeProperty("--scroll-to");
   img.style.removeProperty("--scroll-dur");
   $("#viewer-overlay").hidden = true;
+}
+
+// ── photo star ratings ──
+function ratingURL(path) {
+  return "/api/rating/" + encodePath(path);
+}
+
+function paintStars(rating, preview = 0) {
+  const shown = preview > 0 ? preview : rating;
+  const wrap = $("#viewer-stars");
+  wrap.title = t("viewer.rating");
+  wrap.setAttribute("aria-label", t("viewer.rating"));
+  wrap.querySelectorAll(".viewer-star").forEach((btn) => {
+    const n = Number(btn.dataset.rating);
+    const on = n <= rating;
+    const prev = preview > 0 && n <= preview;
+    btn.classList.toggle("on", on);
+    btn.classList.toggle("preview", prev && !on);
+    btn.innerHTML = icon(n <= shown ? "star-filled" : "star");
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = t("viewer.ratingStar", { n });
+    btn.setAttribute("aria-label", t("viewer.ratingStar", { n }));
+  });
+}
+
+async function loadPhotoRating(path) {
+  if (!path) {
+    state.photoRating = 0;
+    paintStars(0);
+    return;
+  }
+  if (ratingCache.has(path)) {
+    state.photoRating = ratingCache.get(path);
+    paintStars(state.photoRating);
+    return;
+  }
+  // Show unrated while fetching so a previous photo's stars don't linger.
+  state.photoRating = 0;
+  paintStars(0);
+  try {
+    const res = await api(ratingURL(path));
+    const rating = Math.max(0, Math.min(5, Number(res.rating) || 0));
+    ratingCache.set(path, rating);
+    // Ignore stale responses if the viewer moved on.
+    if (state.photos[state.photoIndex]?.path !== path) return;
+    state.photoRating = rating;
+    paintStars(rating);
+  } catch (_) {
+    if (state.photos[state.photoIndex]?.path === path) {
+      state.photoRating = 0;
+      paintStars(0);
+    }
+  }
+}
+
+async function setPhotoRating(n) {
+  const p = state.photos[state.photoIndex];
+  if (!p) return;
+  const prev = state.photoRating;
+  // Click the current rating again to clear.
+  const next = n === prev ? 0 : n;
+  state.photoRating = next;
+  ratingCache.set(p.path, next);
+  paintStars(next);
+  try {
+    if (next === 0) {
+      await api(ratingURL(p.path), { method: "DELETE" });
+    } else {
+      await api(ratingURL(p.path), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating: next }),
+      });
+    }
+  } catch (e) {
+    state.photoRating = prev;
+    ratingCache.set(p.path, prev);
+    paintStars(prev);
+    alert(t("alert.error", { msg: e.message }));
+  }
+}
+
+function bindViewerStars() {
+  const wrap = $("#viewer-stars");
+  if (!wrap || wrap.dataset.bound) return;
+  wrap.dataset.bound = "1";
+  wrap.querySelectorAll(".viewer-star").forEach((btn) => {
+    const n = Number(btn.dataset.rating);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setPhotoRating(n);
+    });
+    btn.addEventListener("mouseenter", () => paintStars(state.photoRating, n));
+    btn.addEventListener("mouseleave", () => paintStars(state.photoRating));
+  });
+  wrap.addEventListener("mouseleave", () => paintStars(state.photoRating));
+  paintStars(0);
 }
 
 // ── EXIF / info panel ──
@@ -3656,6 +3926,7 @@ document.addEventListener("click", (e) => {
 });
 
 $("#viewer-close").addEventListener("click", closeViewer);
+bindViewerStars();
 // Click on the dark backdrop (anywhere that isn't the photo or a control) closes
 // the viewer, matching the behaviour of typical web lightboxes.
 $("#viewer").addEventListener("click", (e) => {
@@ -3718,6 +3989,10 @@ $("#tv-test").addEventListener("click", testTV);
 $("#playlist-cancel").addEventListener("click", closePlaylistModal);
 $("#playlist-save").addEventListener("click", savePlaylistName);
 $("#playlist-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); savePlaylistName(); } });
+$("#smart-cancel").addEventListener("click", closeSmartModal);
+$("#smart-save").addEventListener("click", saveSmartCollection);
+$("#smart-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveSmartCollection(); } });
+bindSmartModalStars();
 $("#playlist-pick-cancel").addEventListener("click", closePlaylistPicker);
 $("#playlist-pick-new").addEventListener("click", async () => {
   const name = prompt(t("playlist.newPrompt"));
@@ -3914,6 +4189,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeViewer();
   else if (e.key === "ArrowLeft") { stopSlideshow(); viewerStep(-1); }
   else if (e.key === "ArrowRight") { stopSlideshow(); viewerStep(1); }
+  else if (e.key >= "1" && e.key <= "5") setPhotoRating(Number(e.key));
+  else if (e.key === "0" && state.photoRating > 0) setPhotoRating(state.photoRating); // clear
 });
 
 // ── sidebar collapse (Plex-style burger toggle) ──

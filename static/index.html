@@ -124,6 +124,13 @@
   <div class="viewer-overlay" id="viewer-overlay" hidden></div>
   <div class="viewer-toolbar">
     <span class="viewer-caption" id="viewer-caption"></span>
+    <div class="viewer-stars" id="viewer-stars" role="group" data-i18n-title="viewer.rating" title="Rating" aria-label="Rating">
+      <button type="button" class="viewer-star" data-rating="1" aria-label="1"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+      <button type="button" class="viewer-star" data-rating="2" aria-label="2"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+      <button type="button" class="viewer-star" data-rating="3" aria-label="3"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+      <button type="button" class="viewer-star" data-rating="4" aria-label="4"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+      <button type="button" class="viewer-star" data-rating="5" aria-label="5"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+    </div>
     <div class="btn-split" role="group" data-i18n-title="viewer.slideshow" title="Slideshow">
       <button class="btn btn-split-main" id="viewer-slideshow">
         <svg class="icon" viewBox="0 0 24 24"><use href="#i-play"/></svg> <span data-i18n="viewer.slideshow">Slideshow</span>
@@ -364,6 +371,32 @@
   </div>
 </div>
 
+<!-- SMART COLLECTION MODAL (create / edit) -->
+<div id="smart-modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-title" id="smart-modal-title" data-i18n="smart.new">New smart collection</div>
+    <label class="field">
+      <span data-i18n="playlist.name">Name</span>
+      <input type="text" id="smart-name" data-i18n-placeholder="smart.namePlaceholder" placeholder="Best photos" autocomplete="off">
+    </label>
+    <div class="field">
+      <span data-i18n="smart.minRating">Minimum rating</span>
+      <div class="smart-modal-stars" id="smart-modal-stars" role="group" aria-label="Minimum rating">
+        <button type="button" class="smart-modal-star" data-rating="1" aria-label="1"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+        <button type="button" class="smart-modal-star" data-rating="2" aria-label="2"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+        <button type="button" class="smart-modal-star" data-rating="3" aria-label="3"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+        <button type="button" class="smart-modal-star" data-rating="4" aria-label="4"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+        <button type="button" class="smart-modal-star" data-rating="5" aria-label="5"><svg class="icon" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
+      </div>
+      <div class="field-hint" id="smart-min-hint"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="smart-cancel" data-i18n="common.cancel">Cancel</button>
+      <button class="btn accent" id="smart-save" data-i18n="common.save">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- ADD TO PLAYLIST PICKER MODAL -->
 <div id="playlist-pick-modal" class="modal" hidden>
   <div class="modal-card">
@@ -421,6 +454,7 @@
     <g id="i-play"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 4v16l13 -8z"/></g>
     <g id="i-pause"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 5h4v14h-4zM14 5h4v14h-4z"/></g>
     <g id="i-star"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></g>
+    <g id="i-star-filled"><path fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></g>
     <g id="i-plus"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/></g>
     <g id="i-refresh"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></g>
     <g id="i-edit"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 7h-1a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2 -2v-1M20.385 6.585a2.1 2.1 0 0 0 -2.97 -2.97l-8.415 8.385v3h3z"/></g>

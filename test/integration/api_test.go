@@ -374,6 +374,135 @@ func TestScanDeepNesting(t *testing.T) {
 	}
 }
 
+func TestPhotoRating(t *testing.T) {
+	e := newTestEnv(t, true, "alice")
+	lib := e.createAndScan("Famille", "famille", []string{"alice"})
+
+	top := decode[[]nodeDTO](t, e.do(http.MethodGet, "/api/libraries/"+lib.ID+"/nodes", nil))
+	montreal := decode[nodeResp](t, e.do(http.MethodGet, "/api/nodes/"+top[0].ID, nil))
+	var albumID string
+	for _, c := range montreal.Children {
+		if c.Name == "carnaval-2025" {
+			albumID = c.ID
+			break
+		}
+	}
+	if albumID == "" {
+		t.Fatal("carnaval-2025 not found")
+	}
+	album := decode[nodeResp](t, e.do(http.MethodGet, "/api/nodes/"+albumID, nil))
+	if len(album.Photos) == 0 {
+		t.Fatal("expected photos in carnaval-2025")
+	}
+	path := album.Photos[0].Path
+
+	// Unrated by default.
+	got := decode[map[string]any](t, e.do(http.MethodGet, "/api/rating/"+path, nil))
+	if got["rating"] != float64(0) {
+		t.Fatalf("expected rating 0, got %+v", got)
+	}
+
+	// Set to 4 stars.
+	put := e.do(http.MethodPut, "/api/rating/"+path, map[string]any{"rating": 4})
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("put rating status = %d", put.StatusCode)
+	}
+	got = decode[map[string]any](t, put)
+	if got["rating"] != float64(4) {
+		t.Fatalf("expected rating 4 after put, got %+v", got)
+	}
+
+	got = decode[map[string]any](t, e.do(http.MethodGet, "/api/rating/"+path, nil))
+	if got["rating"] != float64(4) {
+		t.Fatalf("expected persisted rating 4, got %+v", got)
+	}
+
+	// Invalid rating rejected.
+	bad := e.do(http.MethodPut, "/api/rating/"+path, map[string]any{"rating": 6})
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for rating 6, got %d", bad.StatusCode)
+	}
+
+	// Clear.
+	del := e.do(http.MethodDelete, "/api/rating/"+path, nil)
+	if del.StatusCode != http.StatusOK {
+		t.Fatalf("delete rating status = %d", del.StatusCode)
+	}
+	got = decode[map[string]any](t, del)
+	if got["rating"] != float64(0) {
+		t.Fatalf("expected rating 0 after delete, got %+v", got)
+	}
+}
+
+func TestSmartCollectionMinRating(t *testing.T) {
+	e := newTestEnv(t, true, "alice")
+	lib := e.createAndScan("Famille", "famille", []string{"alice"})
+
+	top := decode[[]nodeDTO](t, e.do(http.MethodGet, "/api/libraries/"+lib.ID+"/nodes", nil))
+	montreal := decode[nodeResp](t, e.do(http.MethodGet, "/api/nodes/"+top[0].ID, nil))
+	var albumID string
+	for _, c := range montreal.Children {
+		if c.Name == "carnaval-2025" {
+			albumID = c.ID
+			break
+		}
+	}
+	if albumID == "" {
+		t.Fatal("carnaval-2025 not found")
+	}
+	album := decode[nodeResp](t, e.do(http.MethodGet, "/api/nodes/"+albumID, nil))
+	if len(album.Photos) < 3 {
+		t.Fatalf("expected at least 3 photos, got %d", len(album.Photos))
+	}
+
+	rate := func(path string, rating int) {
+		resp := e.do(http.MethodPut, "/api/rating/"+path, map[string]any{"rating": rating})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("rate %s = %d: status %d", path, rating, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	rate(album.Photos[0].Path, 3)
+	rate(album.Photos[1].Path, 4)
+	rate(album.Photos[2].Path, 5)
+
+	createResp := e.do(http.MethodPost, "/api/smart-collections", map[string]any{
+		"name": "Four plus", "minRating": 4,
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create smart collection status = %d", createResp.StatusCode)
+	}
+	created := decode[map[string]any](t, createResp)
+	colID, _ := created["id"].(string)
+	if colID == "" {
+		t.Fatalf("expected collection id, got %+v", created)
+	}
+
+	detail := decode[map[string]any](t, e.do(http.MethodGet, "/api/smart-collections/"+colID, nil))
+	photos, _ := detail["photos"].([]any)
+	if len(photos) != 2 {
+		t.Fatalf("expected 2 photos with rating >= 4, got %d", len(photos))
+	}
+
+	// Clearing a 5-star rating drops the collection to one photo.
+	del := e.do(http.MethodDelete, "/api/rating/"+album.Photos[2].Path, nil)
+	del.Body.Close()
+	detail = decode[map[string]any](t, e.do(http.MethodGet, "/api/smart-collections/"+colID, nil))
+	photos, _ = detail["photos"].([]any)
+	if len(photos) != 1 {
+		t.Fatalf("expected 1 photo after clearing 5-star rating, got %d", len(photos))
+	}
+
+	bad := e.do(http.MethodPost, "/api/smart-collections", map[string]any{
+		"name": "Bad", "minRating": 0,
+	})
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for minRating 0, got %d", bad.StatusCode)
+	}
+}
+
 func TestSearchNodes(t *testing.T) {
 	e := newTestEnv(t, true, "alice")
 	e.createAndScan("Famille", "famille", []string{"alice"})

@@ -71,6 +71,17 @@ CREATE TABLE IF NOT EXISTS album_favorites (
   PRIMARY KEY (plex_username, node_id)
 );
 
+-- Per-user 1–5 star ratings for individual photos. photo_path is the same URL
+-- token used for thumb/photo/playlist requests (see AbsToURLPath). Album
+-- favorites stay on album_favorites; this table is photo-only.
+CREATE TABLE IF NOT EXISTS photo_ratings (
+  plex_username TEXT NOT NULL,
+  photo_path    TEXT NOT NULL,
+  rating        INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (plex_username, photo_path)
+);
+
 CREATE TABLE IF NOT EXISTS album_views (
   plex_username TEXT NOT NULL,
   node_id       TEXT REFERENCES nodes(id) ON DELETE CASCADE,
@@ -116,6 +127,19 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 
 CREATE INDEX IF NOT EXISTS idx_playlists_owner ON playlists(owner, last_used_at);
 CREATE INDEX IF NOT EXISTS idx_playlist_items_pl ON playlist_items(playlist_id, position);
+
+-- Rule-based smart collections: evaluated at query time over indexed metadata
+-- and user signals (photo_ratings). Private to their owner.
+CREATE TABLE IF NOT EXISTS smart_collections (
+  id         TEXT PRIMARY KEY,
+  owner      TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  rules      TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_smart_collections_owner ON smart_collections(owner, updated_at);
 
 -- Samsung Frame TVs configured by an admin. token is captured on the first
 -- successful connection and reused to skip the "allow this device?" prompt.
@@ -265,6 +289,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_library ON nodes(library_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_access_library ON library_access(library_id);
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON album_favorites(plex_username);
+CREATE INDEX IF NOT EXISTS idx_photo_ratings_user ON photo_ratings(plex_username, rating);
 CREATE INDEX IF NOT EXISTS idx_views_user ON album_views(plex_username, viewed_at);
 CREATE INDEX IF NOT EXISTS idx_photo_meta_year_place ON photo_meta(year, place_country, place_city);
 CREATE INDEX IF NOT EXISTS idx_photo_meta_lib ON photo_meta(library_id);
