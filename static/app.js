@@ -4139,15 +4139,43 @@ document.addEventListener("click", (e) => {
 
 $("#viewer-close").addEventListener("click", closeViewer);
 bindViewerStars();
+// True when (x,y) lands on the painted photo inside an object-fit:contain <img>.
+// The .fit class sizes the element to the full viewport, so letterboxed margins
+// still hit the <img> — those must count as backdrop clicks.
+function clickOnViewerImageContent(img, clientX, clientY) {
+  const rect = img.getBoundingClientRect();
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw || !nh || rect.width <= 0 || rect.height <= 0) return true;
+  const imageRatio = nw / nh;
+  const boxRatio = rect.width / rect.height;
+  let contentW, contentH;
+  if (imageRatio > boxRatio) {
+    contentW = rect.width;
+    contentH = rect.width / imageRatio;
+  } else {
+    contentH = rect.height;
+    contentW = rect.height * imageRatio;
+  }
+  const left = rect.left + (rect.width - contentW) / 2;
+  const top = rect.top + (rect.height - contentH) / 2;
+  return clientX >= left && clientX <= left + contentW
+      && clientY >= top && clientY <= top + contentH;
+}
+
 // Click on the dark backdrop (anywhere that isn't the photo or a control) closes
 // the viewer, matching the behaviour of typical web lightboxes.
 $("#viewer").addEventListener("click", (e) => {
-  // Direct backdrop click (the #viewer element itself).
   if (e.target === e.currentTarget) {
     closeViewer();
     return;
   }
-  if (e.target.closest(".viewer-img, .viewer-nav, .viewer-close, .viewer-toolbar, .viewer-info, .viewer-menu, .viewer-overlay, .viewer-menu-wrap, .btn-split")) return;
+  // Letterboxed margins around a .fit image look like the backdrop but hit the
+  // <img>; close when the click is outside the painted photo content.
+  if (e.target.classList.contains("viewer-img")) {
+    if (!clickOnViewerImageContent(e.target, e.clientX, e.clientY)) closeViewer();
+    return;
+  }
+  if (e.target.closest(".viewer-nav, .viewer-close, .viewer-toolbar, .viewer-info, .viewer-menu, .viewer-overlay, .viewer-menu-wrap, .btn-split")) return;
   closeViewer();
 });
 $("#viewer-prev").addEventListener("click", () => { stopSlideshow(); viewerStep(-1); });
