@@ -503,6 +503,57 @@ func TestSmartCollectionMinRating(t *testing.T) {
 	}
 }
 
+func TestSmartCollectionNodeScope(t *testing.T) {
+	e := newTestEnv(t, true, "alice")
+	lib := e.createAndScan("Famille", "famille", []string{"alice"})
+
+	top := decode[[]nodeDTO](t, e.do(http.MethodGet, "/api/libraries/"+lib.ID+"/nodes", nil))
+	montreal := decode[nodeResp](t, e.do(http.MethodGet, "/api/nodes/"+top[0].ID, nil))
+	var carnavalID, eteID string
+	for _, c := range montreal.Children {
+		switch c.Name {
+		case "carnaval-2025":
+			carnavalID = c.ID
+		case "ete-2024":
+			eteID = c.ID
+		}
+	}
+	if carnavalID == "" || eteID == "" {
+		t.Fatal("expected carnaval-2025 and ete-2024 albums")
+	}
+	carnaval := decode[nodeResp](t, e.do(http.MethodGet, "/api/nodes/"+carnavalID, nil))
+	ete := decode[nodeResp](t, e.do(http.MethodGet, "/api/nodes/"+eteID, nil))
+
+	rate := func(path string, rating int) {
+		resp := e.do(http.MethodPut, "/api/rating/"+path, map[string]any{"rating": rating})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("rate status = %d", resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	for _, p := range carnaval.Photos {
+		rate(p.Path, 5)
+	}
+	for _, p := range ete.Photos {
+		rate(p.Path, 5)
+	}
+
+	createResp := e.do(http.MethodPost, "/api/smart-collections", map[string]any{
+		"name": "Carnaval only", "minRating": 4, "nodeIds": []string{carnavalID},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create smart collection status = %d", createResp.StatusCode)
+	}
+	created := decode[map[string]any](t, createResp)
+	colID, _ := created["id"].(string)
+
+	detail := decode[map[string]any](t, e.do(http.MethodGet, "/api/smart-collections/"+colID, nil))
+	photos, _ := detail["photos"].([]any)
+	if len(photos) != len(carnaval.Photos) {
+		t.Fatalf("expected %d photos scoped to carnaval, got %d", len(carnaval.Photos), len(photos))
+	}
+}
+
 func TestSearchNodes(t *testing.T) {
 	e := newTestEnv(t, true, "alice")
 	e.createAndScan("Famille", "famille", []string{"alice"})

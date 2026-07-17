@@ -28,14 +28,20 @@ dev:
 	PORT=8099 \
 	go run .
 
-## Build + exporte un .tar.gz de l'image (chargeable sur tout hôte Docker)
+## Build + export TWO tarballs (version pin + latest override for Synology).
+## Each file must contain ONLY its own RepoTag — Synology replaces the running
+## image by matching the :latest tag, so bundling both tags in one archive
+## (or saving the version tag into the "latest" file) will not update the host.
 release: build
 	mkdir -p $(OUT_DIR)
-	docker save $(IMAGE) $(LATEST) | gzip > $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz
+	docker save $(IMAGE) | gzip > $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz
+	docker save $(LATEST) | gzip > $(OUT_DIR)/$(ARTIFACT)-latest.tar.gz
 	@echo ""
-	@echo "Artefact prêt : $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz"
-	@echo "Charger avec : docker load < $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz"
-	@echo "Sur NAS (ex. Synology) : Container Manager → Image → Ajouter → depuis fichier"
+	@echo "Artefacts prêts :"
+	@echo "  $(OUT_DIR)/$(ARTIFACT)-$(VERSION).tar.gz  (tag $(VERSION))"
+	@echo "  $(OUT_DIR)/$(ARTIFACT)-latest.tar.gz      (tag latest)"
+	@echo "Charger avec : docker load < fichier.tar.gz"
+	@echo "Sur NAS (ex. Synology) : importer le *-latest.tar.gz pour remplacer l'image en cours"
 
 ## Nettoie les images et le dossier dist
 clean:

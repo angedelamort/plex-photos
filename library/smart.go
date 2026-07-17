@@ -14,9 +14,11 @@ import (
 )
 
 // SmartCollectionRules is the persisted rule definition for a smart collection.
-// V1 supports minRating only; additional fields can be added later.
+// Empty libraryIds/nodeIds mean no restriction (all accessible libraries/folders).
 type SmartCollectionRules struct {
-	MinRating int `json:"minRating"`
+	MinRating  int      `json:"minRating"`
+	LibraryIDs []string `json:"libraryIds,omitempty"`
+	NodeIDs    []string `json:"nodeIds,omitempty"`
 }
 
 // SmartCollection is a user-owned, rule-based photo set evaluated at query time.
@@ -35,6 +37,102 @@ func validateSmartRules(rules SmartCollectionRules) error {
 		return ErrInvalidRating
 	}
 	return nil
+}
+
+// validateSmartScope checks that optional library/node filters refer to items
+// the user can access.
+func (s *Store) validateSmartScope(owner string, isAdmin bool, rules SmartCollectionRules) error {
+	for _, id := range rules.LibraryIDs {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		ok, err := s.CanAccessLibrary(id, owner, isAdmin)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNotFound
+		}
+	}
+	for _, id := range rules.NodeIDs {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		ok, err := s.CanAccessNode(id, owner, isAdmin)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func normalizeSmartRules(rules SmartCollectionRules) SmartCollectionRules {
+	rules.LibraryIDs = dedupeStrings(rules.LibraryIDs)
+	rules.NodeIDs = dedupeStrings(rules.NodeIDs)
+	return rules
+}
+
+func (s *Store) resolveSmartScope(owner string, isAdmin bool, rules SmartCollectionRules) (libraryRoots, nodeRoots []string, err error) {
+	for _, id := range rules.LibraryIDs {
+		lib, err := s.GetLibrary(id)
+		if err != nil {
+			return nil, nil, err
+		}
+		libraryRoots = append(libraryRoots, lib.RootPath)
+	}
+	for _, id := range rules.NodeIDs {
+		node, err := s.GetNode(id)
+		if err != nil {
+			return nil, nil, err
+		}
+		nodeRoots = append(nodeRoots, node.FSPath)
+	}
+	return libraryRoots, nodeRoots, nil
+}
+
+func photoMatchesSmartScope(fullPath string, libraryRoots, nodeRoots []string) bool {
+	if len(libraryRoots) > 0 {
+		ok := false
+		for _, root := range libraryRoots {
+			if underRoot(root, fullPath) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	if len(nodeRoots) > 0 {
+		ok := false
+		for _, root := range nodeRoots {
+			if underRoot(root, fullPath) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func encodeSmartRules(rules SmartCollectionRules) (string, error) {
@@ -68,8 +166,12 @@ func scanSmartCollectionRow(sc interface{ Scan(...any) error }) (*SmartCollectio
 }
 
 // CreateSmartCollection creates a smart collection owned by the given user.
-func (s *Store) CreateSmartCollection(owner, name string, rules SmartCollectionRules) (*SmartCollection, error) {
+func (s *Store) CreateSmartCollection(owner, name string, rules SmartCollectionRules, isAdmin bool) (*SmartCollection, error) {
+	rules = normalizeSmartRules(rules)
 	if err := validateSmartRules(rules); err != nil {
+		return nil, err
+	}
+	if err := s.validateSmartScope(owner, isAdmin, rules); err != nil {
 		return nil, err
 	}
 	rulesJSON, err := encodeSmartRules(rules)
@@ -131,8 +233,12 @@ func (s *Store) GetSmartCollection(owner, id string) (*SmartCollection, error) {
 }
 
 // UpdateSmartCollection updates name and rules (owner-scoped).
-func (s *Store) UpdateSmartCollection(owner, id, name string, rules SmartCollectionRules) error {
+func (s *Store) UpdateSmartCollection(owner, id, name string, rules SmartCollectionRules, isAdmin bool) error {
+	rules = normalizeSmartRules(rules)
 	if err := validateSmartRules(rules); err != nil {
+		return err
+	}
+	if err := s.validateSmartScope(owner, isAdmin, rules); err != nil {
 		return err
 	}
 	rulesJSON, err := encodeSmartRules(rules)
@@ -175,7 +281,12 @@ func (s *Store) EvaluateSmartCollection(owner, id string, isAdmin bool) ([]Playl
 }
 
 func (s *Store) evaluateSmartRules(owner string, rules SmartCollectionRules, isAdmin bool) ([]PlaylistPhoto, error) {
+	rules = normalizeSmartRules(rules)
 	if err := validateSmartRules(rules); err != nil {
+		return nil, err
+	}
+	libraryRoots, nodeRoots, err := s.resolveSmartScope(owner, isAdmin, rules)
+	if err != nil {
 		return nil, err
 	}
 	rows, err := s.db.Query(`
@@ -194,7 +305,11 @@ func (s *Store) evaluateSmartRules(owner string, rules SmartCollectionRules, isA
 		if err := rows.Scan(&path); err != nil {
 			return nil, err
 		}
-		if ok, _ := s.CanAccessPhotoPath(URLPathToAbs(path), owner, isAdmin); !ok {
+		full := URLPathToAbs(path)
+		if ok, _ := s.CanAccessPhotoPath(full, owner, isAdmin); !ok {
+			continue
+		}
+		if !photoMatchesSmartScope(full, libraryRoots, nodeRoots) {
 			continue
 		}
 		out = append(out, PlaylistPhoto{Name: baseName(path), Path: path})
@@ -205,12 +320,18 @@ func (s *Store) evaluateSmartRules(owner string, rules SmartCollectionRules, isA
 // --- Handlers ---
 
 type smartCollectionInput struct {
-	Name      string `json:"name"`
-	MinRating int    `json:"minRating"`
+	Name       string   `json:"name"`
+	MinRating  int      `json:"minRating"`
+	LibraryIDs []string `json:"libraryIds"`
+	NodeIDs    []string `json:"nodeIds"`
 }
 
 func smartRulesFromInput(in smartCollectionInput) SmartCollectionRules {
-	return SmartCollectionRules{MinRating: in.MinRating}
+	return normalizeSmartRules(SmartCollectionRules{
+		MinRating:  in.MinRating,
+		LibraryIDs: in.LibraryIDs,
+		NodeIDs:    in.NodeIDs,
+	})
 }
 
 // ListSmartCollections returns the current user's smart collections.
@@ -245,7 +366,11 @@ func (h *Handler) CreateSmartCollection(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	col, err := h.store.CreateSmartCollection(s.Username, name, rules)
+	col, err := h.store.CreateSmartCollection(s.Username, name, rules, s.IsAdmin)
+	if errors.Is(err, ErrNotFound) {
+		writeErr(w, http.StatusBadRequest, "invalid library or folder scope")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -308,9 +433,14 @@ func (h *Handler) UpdateSmartCollection(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	err := h.store.UpdateSmartCollection(s.Username, id, name, rules)
+	err := h.store.UpdateSmartCollection(s.Username, id, name, rules, s.IsAdmin)
 	if errors.Is(err, ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "smart collection not found")
+		// Distinguish missing collection from invalid scope by checking existence.
+		if _, getErr := h.store.GetSmartCollection(s.Username, id); getErr != nil {
+			writeErr(w, http.StatusNotFound, "smart collection not found")
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "invalid library or folder scope")
 		return
 	}
 	if err != nil {

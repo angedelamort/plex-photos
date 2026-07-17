@@ -535,6 +535,7 @@ async function renderPlaylists(main) {
     api("/api/playlists"),
     api("/api/smart-collections"),
   ]);
+  await enrichSmartCollections(smarts);
   main.innerHTML = "";
 
   const plHeader = el("div", { class: "section-header" });
@@ -579,7 +580,7 @@ function playlistCard(pl) {
 function smartCollectionCard(col) {
   const art = col.coverPhoto;
   const thumb = art ? `<img src="${thumbURL(art)}" alt="" loading="lazy">` : icon("star-filled");
-  const minRating = col.rules && col.rules.minRating ? col.rules.minRating : 1;
+  const summary = formatSmartRuleSummary(col.rules);
   return el("div", {
     class: "card card--poster",
     onclick: () => navigate({ view: "smartCollection", smartCollectionId: col.id }),
@@ -588,10 +589,46 @@ function smartCollectionCard(col) {
         <div class="card-title">${esc(col.name)}</div>
         <div class="card-counts">
           <span>${esc(t("meta.photos", { n: col.photoCount || 0 }))}</span>
-          <span> · ${esc(t("smart.ruleMinRating", { n: minRating }))}</span>
+          <span> · ${esc(summary)}</span>
         </div>
       </div>`,
   });
+}
+
+function formatSmartRuleSummary(rules) {
+  if (!rules) return t("smart.ruleMinRating", { n: 4 });
+  const parts = [t("smart.ruleMinRating", { n: rules.minRating || 1 })];
+  const libIds = rules.libraryIds || [];
+  if (libIds.length > 0) {
+    parts.push(libIds.map((id) => libraryNameById(id)).join(", "));
+  }
+  const nodeLabels = rules._nodeLabels || [];
+  if (nodeLabels.length > 0) {
+    parts.push(nodeLabels.map((n) => n.name).join(", "));
+  } else if ((rules.nodeIds || []).length > 0) {
+    parts.push(t("smart.folderCount", { n: rules.nodeIds.length }));
+  }
+  return parts.join(" · ");
+}
+
+async function enrichSmartCollectionRules(col) {
+  if (!col || !col.rules) return;
+  const labels = [];
+  for (const id of col.rules.nodeIds || []) {
+    try {
+      const data = await api(`/api/nodes/${id}`);
+      labels.push({
+        id,
+        name: data.node.displayName || data.node.name,
+        libraryId: data.node.libraryId,
+      });
+    } catch (_) { /* skip */ }
+  }
+  col.rules._nodeLabels = labels;
+}
+
+async function enrichSmartCollections(cols) {
+  await Promise.all((cols || []).map((c) => enrichSmartCollectionRules(c)));
 }
 
 async function renderPlaylist(main, route) {
@@ -691,6 +728,7 @@ async function deletePlaylist(pl) {
 async function renderSmartCollection(main, route) {
   const data = await api(`/api/smart-collections/${route.smartCollectionId}`);
   const col = data.collection;
+  await enrichSmartCollectionRules(col);
   const photos = data.photos || [];
   main.innerHTML = "";
 
@@ -714,7 +752,7 @@ async function renderSmartCollection(main, route) {
   main.appendChild(hero(col.name, "", col.coverPhoto || "", actions, "", {
     meta: [
       t("meta.photos", { n: photos.length }),
-      t("smart.ruleMinRating", { n: minRating }),
+      formatSmartRuleSummary(col.rules),
     ],
   }));
 
@@ -745,6 +783,123 @@ function openSmartCollectionViewer(col, photos, index, slideshow) {
 
 let editingSmartCollection = null;
 let smartModalMinRating = 4;
+let smartModalLibraryIds = new Set();
+let smartModalNodes = [];
+let smartFolderSearchTimer = null;
+
+function libraryNameById(id) {
+  const lib = state.libraries.find((l) => l.id === id);
+  return lib ? lib.name : id;
+}
+
+function renderSmartLibraries() {
+  const wrap = $("#smart-libraries");
+  wrap.innerHTML = "";
+  if (!state.libraries.length) {
+    wrap.appendChild(el("div", { class: "field-hint", text: t("smart.noLibraries") }));
+    return;
+  }
+  state.libraries.forEach((lib) => {
+    const checked = smartModalLibraryIds.has(lib.id);
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = checked;
+    cb.addEventListener("change", () => {
+      if (cb.checked) smartModalLibraryIds.add(lib.id);
+      else smartModalLibraryIds.delete(lib.id);
+    });
+    wrap.appendChild(el("label", { class: "smart-scope-check" }, [cb, el("span", { text: lib.name })]));
+  });
+}
+
+function renderSmartFolderChips() {
+  const wrap = $("#smart-folder-chips");
+  wrap.innerHTML = "";
+  smartModalNodes.forEach((node) => {
+    const chip = el("span", { class: "smart-scope-chip" });
+    chip.appendChild(el("span", { text: node.name }));
+    const rm = el("button", { type: "button", html: icon("x"), title: t("smart.removeFolder") });
+    rm.addEventListener("click", () => {
+      smartModalNodes = smartModalNodes.filter((n) => n.id !== node.id);
+      renderSmartFolderChips();
+    });
+    chip.appendChild(rm);
+    wrap.appendChild(chip);
+  });
+}
+
+async function loadSmartModalNodes(nodeIds) {
+  smartModalNodes = [];
+  for (const id of nodeIds || []) {
+    try {
+      const data = await api(`/api/nodes/${id}`);
+      const n = data.node;
+      smartModalNodes.push({ id: n.id, name: n.displayName || n.name, libraryId: n.libraryId });
+    } catch (_) { /* skip missing nodes */ }
+  }
+  renderSmartFolderChips();
+}
+
+function addSmartModalNode(node) {
+  if (smartModalNodes.some((n) => n.id === node.id)) return;
+  smartModalNodes.push({
+    id: node.id,
+    name: node.displayName || node.name,
+    libraryId: node.libraryId,
+  });
+  renderSmartFolderChips();
+  $("#smart-folder-search").value = "";
+  $("#smart-folder-results").hidden = true;
+}
+
+async function runSmartFolderSearch(q) {
+  const panel = $("#smart-folder-results");
+  if (!q) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+  let hits = [];
+  try {
+    hits = await api("/api/search?q=" + encodeURIComponent(q));
+  } catch (_) {
+    hits = [];
+  }
+  panel.innerHTML = "";
+  if (!hits.length) {
+    panel.appendChild(el("div", { class: "search-empty", text: t("search.noResults") }));
+  } else {
+    hits.forEach((node) => {
+      const sub = libraryNameById(node.libraryId);
+      const btn = el("button", {
+        type: "button",
+        class: "smart-scope-result",
+        onclick: () => addSmartModalNode(node),
+      }, [
+        el("span", { text: node.displayName || node.name }),
+        el("span", { class: "smart-scope-result-sub", text: sub }),
+      ]);
+      panel.appendChild(btn);
+    });
+  }
+  panel.hidden = false;
+}
+
+function bindSmartFolderSearch() {
+  const input = $("#smart-folder-search");
+  if (!input || input.dataset.bound) return;
+  input.dataset.bound = "1";
+  input.addEventListener("input", () => {
+    clearTimeout(smartFolderSearchTimer);
+    const q = input.value.trim();
+    smartFolderSearchTimer = setTimeout(() => runSmartFolderSearch(q), 200);
+  });
+  input.addEventListener("blur", () => {
+    setTimeout(() => { $("#smart-folder-results").hidden = true; }, 150);
+  });
+  input.addEventListener("focus", () => {
+    if (input.value.trim()) runSmartFolderSearch(input.value.trim());
+  });
+}
 
 function paintSmartModalStars(minRating) {
   $("#smart-modal-stars").querySelectorAll(".smart-modal-star").forEach((btn) => {
@@ -761,7 +916,18 @@ function openSmartModal(col) {
   $("#smart-modal-title").textContent = col ? t("smart.edit") : t("smart.new");
   $("#smart-name").value = col ? col.name : "";
   smartModalMinRating = col && col.rules && col.rules.minRating ? col.rules.minRating : 4;
+  smartModalLibraryIds = new Set(col && col.rules && col.rules.libraryIds ? col.rules.libraryIds : []);
   paintSmartModalStars(smartModalMinRating);
+  renderSmartLibraries();
+  const nodeIds = col && col.rules && col.rules.nodeIds ? col.rules.nodeIds : [];
+  if (col && col.rules && col.rules._nodeLabels) {
+    smartModalNodes = col.rules._nodeLabels.map((n) => ({ id: n.id, name: n.name, libraryId: n.libraryId || "" }));
+    renderSmartFolderChips();
+  } else {
+    loadSmartModalNodes(nodeIds);
+  }
+  $("#smart-folder-search").value = "";
+  $("#smart-folder-results").hidden = true;
   $("#smart-modal").hidden = false;
   setTimeout(() => $("#smart-name").focus(), 30);
 }
@@ -774,7 +940,12 @@ function closeSmartModal() {
 async function saveSmartCollection() {
   const name = $("#smart-name").value.trim();
   if (!name) { alert(t("smart.nameRequired")); return; }
-  const body = { name, minRating: smartModalMinRating };
+  const body = {
+    name,
+    minRating: smartModalMinRating,
+    libraryIds: [...smartModalLibraryIds],
+    nodeIds: smartModalNodes.map((n) => n.id),
+  };
   try {
     if (editingSmartCollection) {
       const id = editingSmartCollection.id;
@@ -3993,6 +4164,7 @@ $("#smart-cancel").addEventListener("click", closeSmartModal);
 $("#smart-save").addEventListener("click", saveSmartCollection);
 $("#smart-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveSmartCollection(); } });
 bindSmartModalStars();
+bindSmartFolderSearch();
 $("#playlist-pick-cancel").addEventListener("click", closePlaylistPicker);
 $("#playlist-pick-new").addEventListener("click", async () => {
   const name = prompt(t("playlist.newPrompt"));

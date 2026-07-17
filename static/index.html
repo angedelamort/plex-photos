@@ -390,6 +390,20 @@
       </div>
       <div class="field-hint" id="smart-min-hint"></div>
     </div>
+    <div class="field">
+      <span data-i18n="smart.libraries">Libraries</span>
+      <div class="field-hint" data-i18n="smart.librariesHint">Leave all unchecked to include every library you can access.</div>
+      <div class="smart-scope-list" id="smart-libraries"></div>
+    </div>
+    <div class="field">
+      <span data-i18n="smart.folders">Folders</span>
+      <div class="field-hint" data-i18n="smart.foldersHint">Optional. Limit to albums or collections (including subfolders).</div>
+      <div class="smart-scope-search-wrap">
+        <input type="search" id="smart-folder-search" class="smart-scope-search" data-i18n-placeholder="smart.folderSearchPlaceholder" placeholder="Search albums and collections…" autocomplete="off">
+        <div class="smart-scope-results" id="smart-folder-results" hidden></div>
+      </div>
+      <div class="smart-scope-chips" id="smart-folder-chips"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn" id="smart-cancel" data-i18n="common.cancel">Cancel</button>
       <button class="btn accent" id="smart-save" data-i18n="common.save">Save</button>
