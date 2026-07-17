@@ -254,9 +254,21 @@ async function boot() {
 }
 
 // Back/forward navigation: re-render the view for the popped history entry.
+// The photo viewer pushes its own history entry so the first Back closes the
+// overlay; only a subsequent Back navigates to the previous page.
 window.addEventListener("popstate", (e) => {
   if ($("#app").hidden) return;
+  if (ignoreViewerPopState) {
+    ignoreViewerPopState = false;
+    return;
+  }
+  if (viewerInHistory || !$("#viewer").hidden) {
+    viewerInHistory = false;
+    closeViewerUI();
+    return;
+  }
   const route = e.state || pathToRoute(location.pathname);
+  if (route && route.viewer) delete route.viewer;
   navigate(route, { fromPopState: true });
 });
 
@@ -2350,7 +2362,14 @@ async function renderNode(main, route) {
 }
 
 // ── viewer ──
+// True while the open viewer owns a history entry (so Back closes it first).
+let viewerInHistory = false;
+// Set when closeViewer() itself calls history.back(), so the matching popstate
+// does not also trigger a page navigation.
+let ignoreViewerPopState = false;
+
 function openViewer(photos, index, album, slideshow) {
+  const alreadyOpen = !$("#viewer").hidden;
   state.photos = photos;
   state.photoIndex = index;
   state.currentAlbum = album;
@@ -2368,6 +2387,16 @@ function openViewer(photos, index, album, slideshow) {
   closeViewerMenu();
   updateViewer();
   if (slideshow) startSlideshow(); else applyOverlay();
+  // Push a same-URL history entry so browser Back closes the viewer before
+  // leaving the page. Skip if the viewer was already open (e.g. re-open).
+  if (!alreadyOpen && !viewerInHistory) {
+    const base = (history.state && typeof history.state === "object" && !Array.isArray(history.state))
+      ? { ...history.state }
+      : pathToRoute(location.pathname);
+    delete base.viewer;
+    history.pushState({ ...base, viewer: true }, "", location.pathname + location.search);
+    viewerInHistory = true;
+  }
 }
 
 function updateViewer() {
@@ -2465,7 +2494,8 @@ function viewerStep(delta) {
   updateViewer();
 }
 
-function closeViewer() {
+// Hide the viewer overlay without touching history.
+function closeViewerUI() {
   stopSlideshow();
   closeViewerMenu();
   state.infoOpen = false;
@@ -2473,6 +2503,17 @@ function closeViewer() {
   $("#viewer").hidden = true;
   $("#viewer-img").src = "";
   $("#viewer-overlay").hidden = true;
+}
+
+// Close the viewer and pop its history entry so the Back stack stays consistent
+// with X / Escape / backdrop close (same as pressing Back).
+function closeViewer() {
+  if ($("#viewer").hidden) return;
+  closeViewerUI();
+  if (!viewerInHistory) return;
+  viewerInHistory = false;
+  ignoreViewerPopState = true;
+  history.back();
 }
 
 // ── slideshow controls auto-hide ──
@@ -4101,7 +4142,12 @@ bindViewerStars();
 // Click on the dark backdrop (anywhere that isn't the photo or a control) closes
 // the viewer, matching the behaviour of typical web lightboxes.
 $("#viewer").addEventListener("click", (e) => {
-  if (e.target.closest(".viewer-img, .viewer-nav, .viewer-close, .viewer-toolbar, .viewer-info, .viewer-menu, .viewer-overlay")) return;
+  // Direct backdrop click (the #viewer element itself).
+  if (e.target === e.currentTarget) {
+    closeViewer();
+    return;
+  }
+  if (e.target.closest(".viewer-img, .viewer-nav, .viewer-close, .viewer-toolbar, .viewer-info, .viewer-menu, .viewer-overlay, .viewer-menu-wrap, .btn-split")) return;
   closeViewer();
 });
 $("#viewer-prev").addEventListener("click", () => { stopSlideshow(); viewerStep(-1); });
@@ -4125,8 +4171,13 @@ $("#viewer-remove-playlist").addEventListener("click", async () => {
   const idx = state.photos.findIndex((x) => x.path === p.path);
   if (idx >= 0) state.photos.splice(idx, 1);
   if (state.photos.length === 0) {
-    closeViewer();
-    navigate({ view: "playlist", playlistId });
+    // Replace the viewer history entry with the playlist route so Back from
+    // the playlist returns to the page that opened the viewer.
+    closeViewerUI();
+    viewerInHistory = false;
+    const route = { view: "playlist", playlistId };
+    history.replaceState(route, "", routeToPath(route));
+    navigate(route, { fromPopState: true });
     return;
   }
   state.photoIndex = state.photoIndex % state.photos.length;

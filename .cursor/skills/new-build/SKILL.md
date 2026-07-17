@@ -8,11 +8,30 @@ disable-model-invocation: true
 
 Cuts a new release of **plex-photos**: bumps the **minor** version, creates the git
 tag, and builds the Plex/Synology-ready Docker image exported as
-`dist/plex-photos-<version>.tar.gz`.
+`dist/plex-photos-<version>.tar.gz` **and** `dist/plex-photos-latest.tar.gz`.
 
 The version is derived from git tags (`git describe`) and baked into the binary
-via `-ldflags -X main.version=...`. The release artifact is produced by the
-existing `make release` target (`docker save | gzip`).
+via `-ldflags -X main.version=...`. Prefer `make release` (or
+`scripts/release.ps1` on Windows).
+
+## Critical: Synology `:latest` override
+
+The Synology host runs `angedelamort/plex-photos:latest`. Importing a tarball
+only replaces that running image when the archive's Docker `RepoTags` is
+exactly `angedelamort/plex-photos:latest`.
+
+Hard rules — treat a violation as a failed release:
+
+1. Build with **both** tags: `-t IMAGE:VERSION -t IMAGE:latest`.
+2. Export **two separate** tarballs with **one `docker save` per tag**:
+   - `dist/plex-photos-<version>.tar.gz` → `RepoTags: ["angedelamort/plex-photos:<version>"]`
+   - `dist/plex-photos-latest.tar.gz` → `RepoTags: ["angedelamort/plex-photos:latest"]`
+3. **Never** `docker save IMAGE:VERSION IMAGE:latest` into one archive.
+4. **Never** put a version RepoTag inside the `*-latest.tar.gz` file (filename
+   alone does not matter — Synology keys off the tag inside the archive).
+5. After export, verify `manifest.json` `RepoTags` in each tarball (Step 4).
+   If the latest file is not exactly `:latest`, rebuild/export before reporting
+   success.
 
 ## Step 1: Wizard (confirm before doing anything)
 
@@ -40,7 +59,8 @@ git describe --tags --abbrev=0
 4. Present a confirmation wizard to the user using `AskQuestion`, showing:
    - Current version → next version (the minor bump)
    - That it will create git tag `<next>` and run `make release`
-   - That the output will be `dist/plex-photos-<next>.tar.gz` (Plex/Synology)
+   - That the output will be `dist/plex-photos-<next>.tar.gz` **and**
+     `dist/plex-photos-latest.tar.gz` (Plex/Synology)
 
    Ask whether to proceed. Offer options: **Proceed**, **Bump patch instead**,
    **Bump major instead**, **Cancel**. Only continue once the user picks a bump.
@@ -84,29 +104,37 @@ user explicitly asks you to keep the tag local.
 ## Step 3: Build the release artifact
 
 Run the existing release target. It builds the Docker image with the version
-baked in and exports the gzipped tarball:
+baked in and exports **two** gzipped tarballs (one tag each):
 
 ```bash
 make release
 ```
 
+On Windows without `make`/`gzip`, use:
+
+```powershell
+./scripts/release.ps1 -Version v1.3.0
+```
+
 The Docker image is named `angedelamort/plex-photos`. **You MUST always build
 AND export BOTH tags at once — the versioned tag (`:v1.3.0`) and `:latest` —**
 because they serve different purposes: the versioned tag pins this exact release,
-while `:latest` is what the target host runs/updates by default. Tag the image
-with both in a single `docker build` (`-t IMAGE:VERSION -t IMAGE:latest`).
+while `:latest` is what Synology runs and must be overwritten on update.
+Tag the image with both in a single `docker build`
+(`-t IMAGE:VERSION -t IMAGE:latest`).
 
 **You MUST produce TWO separate tarball files, each containing only its own tag:**
 
-- `dist/plex-photos-<version>.tar.gz` — the image saved with the **`:v1.3.0`** tag.
-- `dist/plex-photos-latest.tar.gz` — the image saved with the **`:latest`** tag.
+- `dist/plex-photos-<version>.tar.gz` — saved with **only** the `:v1.3.0` tag.
+- `dist/plex-photos-latest.tar.gz` — saved with **only** the `:latest` tag.
 
 Both are exported from the same freshly built image in the same run, so they
 always match. Do NOT bundle both tags into one tarball, and do NOT skip the
-`latest` file — without its own tarball the target host never gets an updated
-`:latest` image. Both files are overwritten fresh on every release.
+`latest` file — without a tarball whose RepoTag is exactly `:latest`, Synology
+never replaces the running image. Both files are overwritten fresh on every
+release.
 
-Equivalent manual steps if `make` is unavailable (e.g. plain Windows shell):
+Equivalent manual steps if `make` / `release.ps1` are unavailable:
 
 ```bash
 docker build --build-arg VERSION=v1.3.0 -t angedelamort/plex-photos:v1.3.0 -t angedelamort/plex-photos:latest .
@@ -115,9 +143,8 @@ docker save angedelamort/plex-photos:v1.3.0 | gzip > dist/plex-photos-v1.3.0.tar
 docker save angedelamort/plex-photos:latest | gzip > dist/plex-photos-latest.tar.gz
 ```
 
-On Windows PowerShell, `make` and `gzip` are typically unavailable. Build with
-both tags, then save and gzip **each tag into its own tarball** via .NET. Define
-a small helper and call it once per tag:
+On Windows PowerShell without the script, build with both tags, then save and
+gzip **each tag into its own tarball** via .NET:
 
 ```powershell
 docker build --build-arg VERSION=v1.3.0 -t angedelamort/plex-photos:v1.3.0 -t angedelamort/plex-photos:latest .
@@ -133,6 +160,7 @@ function Save-GzImage($tag, $outName) {
   Remove-Item $tar
 }
 
+# One save per tag — never pass both tags to a single docker save.
 Save-GzImage "angedelamort/plex-photos:v1.3.0" "plex-photos-v1.3.0"
 Save-GzImage "angedelamort/plex-photos:latest" "plex-photos-latest"
 ```
@@ -141,9 +169,18 @@ Save-GzImage "angedelamort/plex-photos:latest" "plex-photos-latest"
 
 1. Confirm BOTH artifacts exist and share the same fresh timestamp:
    `dist/plex-photos-<version>.tar.gz` and `dist/plex-photos-latest.tar.gz`.
-2. Report to the user: the new version, the tag created, and both artifact paths.
-3. Remind them: import it in Synology Container Manager → Registry → Add, and
-   that the app boots into the **first-run setup wizard** at `/setup` (no Plex
+2. **Verify RepoTags inside each archive** (required). Extract `manifest.json`
+   from each `.tar.gz` and confirm:
+   - version file → `["angedelamort/plex-photos:<version>"]` only
+   - latest file → `["angedelamort/plex-photos:latest"]` only  
+   If the latest file has a version tag (or both tags), the release is broken
+   for Synology — re-export with separate `docker save` calls.
+3. Report to the user: the new version, the tag created, both artifact paths,
+   and the verified RepoTags.
+4. Remind them: import `plex-photos-latest.tar.gz` in Synology Container
+   Manager → Image → Add from file to replace the running `:latest` image.
+   The versioned tarball is optional (pin/archive). The app boots into the
+   **first-run setup wizard** at `/setup` only on a fresh data dir (no Plex
    env vars baked in — server URL / machine ID are entered there on first run).
 
 ## Notes
