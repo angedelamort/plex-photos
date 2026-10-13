@@ -168,7 +168,10 @@ func (sc *Scanner) updateProgress(libraryID string, fn func(*ScanProgress)) {
 
 // Scan walks a library's root folder, syncing collections and albums into the
 // database, then runs a quick (presence-only) thumbnail + metadata pass. Stale
-// entries are removed. It also reports progress so callers can render a live
+// entries are removed. A folder moved inside the library (same folder name,
+// same image names, sizes, and modification times) is relinked onto its
+// existing row first, so metadata, ratings, playlists, covers, and thumbnails
+// follow the files. It also reports progress so callers can render a live
 // banner. This is the everyday scan used by auto-scan.
 func (sc *Scanner) Scan(lib *Library, source string) error {
 	return sc.scanWithJob(lib, source, nil, ScanQuick)
@@ -288,6 +291,13 @@ func (sc *Scanner) scan(lib *Library) error {
 	}
 	sc.updateProgress(lib.ID, func(p *ScanProgress) { p.Total = len(allDirs) })
 
+	// Relink folders that moved before upsert/prune so the walk finds the
+	// existing rows at their new paths instead of deleting them.
+	moved, err := sc.relinkMoves(tx, lib, allDirs)
+	if err != nil {
+		return err
+	}
+
 	// Walk the tree recursively, creating one node per directory. A node can be
 	// both a collection (has child dirs) and an album (has direct images).
 	var walk func(dir, parentID string, depth int) error
@@ -336,7 +346,16 @@ func (sc *Scanner) scan(lib *Library) error {
 	if _, err := tx.Exec(`UPDATE libraries SET last_scan = ? WHERE id = ?`, time.Now(), lib.ID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Thumbnails are renamed only after the path rewrite is committed. A failed
+	// scan rolls the database back and leaves the cache where it was.
+	sc.renameMovedThumbs(moved)
+	if len(moved) > 0 && sc.store != nil {
+		sc.store.invalidateQuarantineCache()
+	}
+	return nil
 }
 
 // thumbnailPhase runs the post-index work as distinct, separately-reported

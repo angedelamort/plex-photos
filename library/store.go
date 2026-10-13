@@ -755,6 +755,15 @@ type QuarantinedMedia struct {
 	LastSeen    time.Time `json:"lastSeen"`
 }
 
+// invalidateQuarantineCache drops the in-memory quarantine mirror so the next
+// read reloads it. Used after a move relink rewrites photo_path keys in bulk.
+func (s *Store) invalidateQuarantineCache() {
+	s.quarMu.Lock()
+	s.quarSet = nil
+	s.quarLoaded = false
+	s.quarMu.Unlock()
+}
+
 // loadQuarantineSet populates the in-memory quarantine mirror from the table on
 // first use. Subsequent calls are cheap no-ops; the mutators keep the set in
 // sync so a reload is never needed for correctness.
